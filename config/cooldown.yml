@@ -1,0 +1,4 @@
+cooldown:
+  loss_trigger_ccy: 200.0   # if a single realized loss >= $200, trigger cooldown
+  minutes: 10               # block new entries for N minutes
+  enabled: true

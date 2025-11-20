@@ -1,0 +1,12 @@
+# Times are LOCAL to ops.timezone in ftmo.yml (default America/New_York).
+routes:
+  XAUUSD:
+    strategy: config_strategy
+    windows: ["09:30-11:30", "14:00-16:00"]
+    max_trades_per_window: 3
+    interval_sec: 8.0
+  US30USD:
+    strategy: config_strategy
+    windows: ["09:30-11:30", "13:00-15:30"]
+    max_trades_per_window: 2
+    interval_sec: 12.0

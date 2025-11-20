@@ -1,0 +1,18 @@
+enabled: true
+reason_prefix: "TIME"
+timezone: "UTC"
+
+# Allowed trading windows per symbol (24h HH:MM-HH:MM), multiple allowed
+allowed:
+  XAUUSD:  ["06:00-20:00"]
+  US30USD: ["07:00-20:00"]
+  NAS100USD:["07:00-20:00"]
+  SPX500USD:["07:00-20:00"]
+  WTICOUSD: ["02:00-21:00"]
+  BTCUSD:   ["00:00-23:59"]
+
+# Cooldowns (minutes) after losing/winning trade per symbol (fallback default)
+cooldowns:
+  default:
+    after_loss: 15
+    after_win:  3

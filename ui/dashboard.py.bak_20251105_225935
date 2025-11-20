@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+import time, threading, tkinter as tk
+from tkinter import ttk, messagebox
+
+COLORS = {
+    "BG": "#111317", "PANEL": "#1a1f29", "TEXT": "#e7e9ee", "SUBTEXT": "#b6bdc7",
+    "ACCENT_GREEN": "#2fb170", "ACCENT_RED": "#d04a4a", "ACCENT_BLUE": "#3c7bd6",
+    "ACCENT_AMBER": "#e0a339", "BANNER_RUN": "#0f5d3e", "BANNER_PAUSE": "#6b1f1f"
+}
+
+# optional import; we re-attempt inside handler(s)
+try:
+    from tools.mt5_flatten_all import mt5_flatten_all
+except Exception:
+    mt5_flatten_all = None
+
+class MiniDashboard:
+    """Small Tk dashboard the runner can attach to."""
+    REFRESH_MS = 500
+
+    def __init__(self, controller):
+        self.controller = controller
+        self._cached_min_conf = 0.50  # local cache if controller doesn't expose a getter
+        self._symbols_cache = []       # [(canonical, broker), ...]
+
+        self.root = tk.Tk()
+        self.root.title("FTMO Trader — Dashboard")
+        self.root.configure(bg=COLORS["BG"])
+
+        # Banner
+        self.banner_var = tk.StringVar(value="PAUSED")
+        self.banner = tk.Label(self.root, textvariable=self.banner_var,
+                               font=("Segoe UI", 20, "bold"),
+                               bg=COLORS["BANNER_PAUSE"], fg="white", pady=6)
+        self.banner.pack(fill="x", padx=0, pady=(0, 8))
+
+        # Controls panel
+        controls = tk.Frame(self.root, bg=COLORS["PANEL"])
+        controls.pack(fill="x", padx=10, pady=(0, 10))
+        btn = {"font": ("Segoe UI", 11, "bold"), "width": 14}
+        tk.Button(controls, text="▶ RESUME", command=self.on_resume,
+                  bg=COLORS["ACCENT_GREEN"], fg="white", **btn).pack(side="left", padx=6, pady=8)
+        tk.Button(controls, text="⏸ PAUSE", command=self.on_pause,
+                  bg=COLORS["ACCENT_RED"], fg="white", **btn).pack(side="left", padx=6, pady=8)
+        self.autopause_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(controls, text="Auto-pause", variable=self.autopause_var,
+                       command=self.on_toggle_autopause, bg=COLORS["PANEL"],
+                       fg=COLORS["TEXT"], selectcolor=COLORS["BG"],
+                       font=("Segoe UI", 10, "bold")).pack(side="left", padx=12)
+        tk.Button(controls, text="❎ CLOSE ALL", command=self.on_close_all,
+                  bg=COLORS["ACCENT_RED"], fg="white", **btn).pack(side="left", padx=6, pady=8)
+
+        # AI controls panel (MIN_CONF)
+        ai_panel = tk.Frame(self.root, bg=COLORS["PANEL"])
+        ai_panel.pack(fill="x", padx=10, pady=(0, 10))
+        tk.Label(ai_panel, text="MIN_CONF", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 10, "bold")).pack(side="left", padx=(10, 6), pady=8)
+        self.min_conf_var = tk.DoubleVar(value=self._get_min_conf_initial())
+        self.min_conf_scale = tk.Scale(ai_panel, from_=0.0, to=1.0, resolution=0.01,
+                                       orient="horizontal", length=240,
+                                       variable=self.min_conf_var, bg=COLORS["PANEL"],
+                                       fg=COLORS["TEXT"], troughcolor="#2a3446",
+                                       highlightthickness=0, command=self.on_min_conf_change)
+        self.min_conf_scale.pack(side="left", padx=6)
+        self.min_conf_label = tk.Label(ai_panel, text=f"{self.min_conf_var.get():0.2f}",
+                                       bg=COLORS["PANEL"], fg=COLORS["TEXT"],
+                                       font=("Segoe UI", 10, "bold"))
+        self.min_conf_label.pack(side="left", padx=8)
+
+        # Manual Trade panel (symbol + vol + BUY/SELL)
+        trade_panel = tk.Frame(self.root, bg=COLORS["PANEL"])
+        trade_panel.pack(fill="x", padx=10, pady=(0, 10))
+
+        tk.Label(trade_panel, text="Symbol", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 10, "bold")).pack(side="left", padx=(10, 6), pady=8)
+        self.symbol_var = tk.StringVar(value="")
+        self.symbol_combo = ttk.Combobox(trade_panel, textvariable=self.symbol_var, width=18, state="readonly")
+        self.symbol_combo.pack(side="left", padx=6, pady=6)
+
+        tk.Label(trade_panel, text="Volume", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 10, "bold")).pack(side="left", padx=(14, 6), pady=8)
+        self.vol_var = tk.StringVar(value=self._get_default_lot_size())
+        vol_entry = tk.Entry(trade_panel, textvariable=self.vol_var, width=10,
+                             bg=COLORS["BG"], fg=COLORS["TEXT"], insertbackground=COLORS["TEXT"])
+        vol_entry.pack(side="left", padx=6, pady=6)
+
+        buy_btn = tk.Button(trade_panel, text="BUY", command=lambda: self.on_manual_order("BUY"),
+                            bg=COLORS["ACCENT_GREEN"], fg="white", font=("Segoe UI", 11, "bold"), width=10)
+        sell_btn = tk.Button(trade_panel, text="SELL", command=lambda: self.on_manual_order("SELL"),
+                             bg=COLORS["ACCENT_RED"], fg="white", font=("Segoe UI", 11, "bold"), width=10)
+        buy_btn.pack(side="left", padx=(12,6), pady=8)
+        sell_btn.pack(side="left", padx=6, pady=8)
+
+        # Status line
+        status = tk.Frame(self.root, bg=COLORS["PANEL"])
+        status.pack(fill="x", padx=10, pady=(0, 10))
+        self.status_var = tk.StringVar(value="Status: N/A")
+        tk.Label(status, textvariable=self.status_var, bg=COLORS["PANEL"],
+                 fg=COLORS["TEXT"], anchor="w", font=("Segoe UI", 10)
+                 ).pack(fill="x", padx=8, pady=8)
+
+        # Symbols table
+        table = tk.Frame(self.root, bg=COLORS["BG"])
+        table.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        cols = ("canonical","broker","state","last_price","conf","action")
+        self.tree = ttk.Treeview(table, columns=cols, show="headings", height=14)
+        for c, t, w, a in [
+            ("canonical","Canonical",120,"w"), ("broker","Broker Symbol",160,"w"),
+            ("state","State",90,"center"), ("last_price","Last Price",110,"e"),
+            ("conf","Confidence",100,"e"), ("action","Action",100,"center")
+        ]:
+            self.tree.heading(c, text=t); self.tree.column(c, width=w, anchor=a)
+        vsb = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set); self.tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", self.on_table_select)
+
+        self._refresh_job = None
+        self.schedule_refresh()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
+
+    # --- helpers to read initial values from controller ---
+    def _get_min_conf_initial(self) -> float:
+        try:
+            if hasattr(self.controller, "get_min_conf"):
+                v = float(self.controller.get_min_conf()); self._cached_min_conf = max(0, min(1, v)); return self._cached_min_conf
+            if hasattr(self.controller, "get_param"):
+                v = float(self.controller.get_param("MIN_CONF")); self._cached_min_conf = max(0, min(1, v)); return self._cached_min_conf
+            if hasattr(self.controller, "MIN_CONF"):
+                v = float(getattr(self.controller, "MIN_CONF")); self._cached_min_conf = max(0, min(1, v)); return self._cached_min_conf
+        except Exception:
+            pass
+        return self._cached_min_conf
+
+    def _get_default_lot_size(self) -> str:
+        try:
+            if hasattr(self.controller, "LOT_SIZE"):
+                v = float(getattr(self.controller, "LOT_SIZE")); return f"{v:g}"
+        except Exception:
+            pass
+        return "1.0"
+
+    # --- button handlers ---
+    def on_resume(self):
+        try:
+            if hasattr(self.controller, "resume"): self.controller.resume()
+        except Exception as e:
+            messagebox.showerror("Resume failed", str(e))
+        self._flash("Resuming…", COLORS["ACCENT_BLUE"])
+
+    def on_pause(self):
+        try:
+            if hasattr(self.controller, "pause"): self.controller.pause()
+        except Exception as e:
+            messagebox.showerror("Pause failed", str(e))
+        self._flash("Pausing…", COLORS["ACCENT_AMBER"])
+
+    def on_toggle_autopause(self):
+        v = bool(self.autopause_var.get())
+        try:
+            if hasattr(self.controller, "set_autopause"): self.controller.set_autopause(v)
+        except Exception as e:
+            messagebox.showerror("Autopause toggle failed", str(e))
+        self._flash(f"Autopause → {v}", COLORS["ACCENT_BLUE"])
+
+    def on_close_all(self):
+        def worker():
+            global mt5_flatten_all
+            if mt5_flatten_all is None:
+                try:
+                    from tools.mt5_flatten_all import mt5_flatten_all as _f
+                    mt5_flatten_all = _f
+                except Exception as e:
+                    self._flash(f"❌ Close All unavailable: {e}", COLORS["ACCENT_RED"]); return
+            try:
+                self._flash("🟠 Closing all positions…", COLORS["ACCENT_AMBER"])
+                n = int(mt5_flatten_all() or 0)
+                self._flash(f"✅ Closed {n} position(s).", COLORS["ACCENT_GREEN"])
+            except Exception as e:
+                self._flash(f"❌ Close All failed: {e}", COLORS["ACCENT_RED"])
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_min_conf_change(self, _evt=None):
+        v = round(float(self.min_conf_var.get()), 2)
+        self.min_conf_label.config(text=f"{v:0.2f}")
+        self._cached_min_conf = v
+        try:
+            if hasattr(self.controller, "set_min_conf"):
+                self.controller.set_min_conf(v); return
+            if hasattr(self.controller, "set_param"):
+                self.controller.set_param("MIN_CONF", v); return
+            if hasattr(self.controller, "MIN_CONF"):
+                setattr(self.controller, "MIN_CONF", v); return
+        except Exception as e:
+            self._flash(f"MIN_CONF apply failed: {e}", COLORS["ACCENT_RED"])
+
+    def on_manual_order(self, side: str):
+        sym = (self.symbol_var.get() or "").strip()
+        if not sym:
+            self._flash("❌ Pick a symbol first.", COLORS["ACCENT_RED"]); return
+        try:
+            vol = float(self.vol_var.get())
+            if vol <= 0: raise ValueError("Volume must be > 0")
+        except Exception as e:
+            self._flash(f"❌ Bad volume: {e}", COLORS["ACCENT_RED"]); return
+
+        def worker():
+            try:
+                if hasattr(self.controller, "order_market"):
+                    ok, res = self.controller.order_market(sym, side.upper(), vol, reason="manual")
+                    if ok:
+                        self._flash(f"✅ {side} {sym} vol={vol:g} sent", COLORS["ACCENT_GREEN"])
+                    else:
+                        self._flash(f"❌ {side} {sym} failed: {res}", COLORS["ACCENT_RED"])
+                else:
+                    self._flash("❌ controller has no order_market()", COLORS["ACCENT_RED"])
+            except Exception as e:
+                self._flash(f"❌ Manual order error: {e}", COLORS["ACCENT_RED"])
+        threading.Thread(target=worker, daemon=True).start()
+
+    # --- table selection -> symbol box sync ---
+    def on_table_select(self, _evt=None):
+        sel = self.tree.selection()
+        if not sel: return
+        vals = self.tree.item(sel[0], "values") or ()
+        if len(vals) >= 2:
+            broker = vals[1]
+            if broker and broker != self.symbol_var.get():
+                self.symbol_var.set(broker)
+
+    # --- refresh loop ---
+    def schedule_refresh(self):
+        self._do_refresh()
+        self._refresh_job = self.root.after(self.REFRESH_MS, self.schedule_refresh)
+
+    def _do_refresh(self):
+        status = {}
+        try:
+            if hasattr(self.controller, "get_status"): status = self.controller.get_status() or {}
+        except Exception:
+            status = {}
+
+        running = bool(status.get("running", False))
+        self.banner_var.set("RUNNING" if running else "PAUSED")
+        self.banner.configure(bg=COLORS["BANNER_RUN"] if running else COLORS["BANNER_PAUSE"])
+
+        # Sync MIN_CONF from controller if changed elsewhere
+        try:
+            cur = None
+            if hasattr(self.controller, "get_min_conf"):
+                cur = float(self.controller.get_min_conf())
+            elif hasattr(self.controller, "get_param"):
+                cur = float(self.controller.get_param("MIN_CONF"))
+            elif hasattr(self.controller, "MIN_CONF"):
+                cur = float(getattr(self.controller, "MIN_CONF"))
+            if cur is not None and abs(cur - self.min_conf_var.get()) >= 0.005:
+                self.min_conf_var.set(max(0.0, min(1.0, cur)))
+                self.min_conf_label.config(text=f"{self.min_conf_var.get():0.2f}")
+        except Exception:
+            pass
+
+        hb = status.get("heartbeat_age_sec"); hb_s = f"{hb:0.1f}s" if isinstance(hb,(int,float)) else "N/A"
+        conf = status.get("ai_conf"); conf_s = f"{conf:0.2f}" if isinstance(conf,(int,float)) else "N/A"
+        op = status.get("open_positions"); op_s = str(op) if isinstance(op,int) else "N/A"
+        ftmo = status.get("ftmo_one_liner") or "N/A"
+        minc = f"{self.min_conf_var.get():0.2f}"
+        self.status_var.set(f"HB: {hb_s}   |   AI conf: {conf_s}   |   Open pos: {op_s}   |   MIN_CONF: {minc}   |   FTMO: {ftmo}")
+
+        rows = status.get("symbols") or []
+        # Build cache and combo list on first refresh or when changed
+        new_pairs = [(r.get("canonical") or "N/A", r.get("broker") or "N/A") for r in rows]
+        if new_pairs != self._symbols_cache:
+            self._symbols_cache = new_pairs
+            broker_list = [b for (_c,b) in new_pairs if b]
+            self.symbol_combo["values"] = broker_list
+            if broker_list and not self.symbol_var.get():
+                self.symbol_var.set(broker_list[0])
+
+        existing = { self.tree.item(i,"values")[0]: i for i in self.tree.get_children("") if self.tree.item(i,"values") }
+        seen = set()
+        for r in rows:
+            canon = r.get("canonical") or "N/A"
+            values = (
+                canon, r.get("broker") or "N/A", r.get("state") or "N/A",
+                f"{r.get('last_price'):,.2f}" if isinstance(r.get("last_price"),(int,float)) else "N/A",
+                f"{r.get('conf'):0.2f}" if isinstance(r.get("conf"),(int,float)) else "N/A",
+                r.get("action") or "N/A",
+            )
+            if canon in existing: self.tree.item(existing[canon], values=values)
+            else: existing[canon] = self.tree.insert("", "end", values=values)
+            seen.add(canon)
+        for canon, iid in list(existing.items()):
+            if canon not in seen: self.tree.delete(iid)
+
+    # --- utils ---
+    def _flash(self, text, color):
+        self.status_var.set(text)
+        try:
+            self.banner.configure(fg=color)
+            self.root.after(1500, lambda: self.banner.configure(fg="white"))
+        except Exception:
+            pass
+
+    def on_close_window(self):
+        try:
+            if hasattr(self.controller,"shutdown"): self.controller.shutdown()
+        except Exception: pass
+        if self._refresh_job: self.root.after_cancel(self._refresh_job)
+        self.root.destroy()
+
+    def run(self): self.root.mainloop()
+
+if __name__ == "__main__":
+    # optional demo run
+    import sys
+    if "--demo" in sys.argv:
+        class _Dummy:
+            MIN_CONF = 0.5
+            LOT_SIZE = 1.0
+            def resume(self): pass
+            def pause(self): pass
+            def set_autopause(self,_): pass
+            def get_status(self):
+                return {"running": True, "heartbeat_age_sec": 1.2, "ai_conf": 0.5, "open_positions": 0,
+                        "ftmo_one_liner": "ok", "symbols":[
+                            {"canonical":"XAUUSD","broker":"XAUUSD","state":"IDLE"},
+                            {"canonical":"US30","broker":"US30USD","state":"IDLE"},
+                        ]}
+            def set_min_conf(self,v): pass
+            def order_market(self,sym,side,vol,reason="manual"): return True, {"simulated":True}
+        MiniDashboard(_Dummy()).run()

@@ -1,0 +1,13 @@
+enabled: true
+reason_prefix: "SIZE"
+# Enable volatility-target sizing (if false, we still clamp/round)
+vol_target:
+  enabled: false
+  tf: M15
+  atr_period: 14
+  risk_per_trade_ccy: 50   # how much to risk per trade in account CCY
+
+# Clamps & rounding
+min_volume: 0.01
+max_volume: 10.0
+step: 0.01

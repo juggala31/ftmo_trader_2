@@ -1,0 +1,13 @@
+risk:
+  account_equity_ccy: 100000.0   # used only for DRY/SIM sizing; live: wire your real equity later
+  default_risk_pct: 0.50         # risk per trade in % of equity (0.5% default)
+atr:
+  lookback: 14                   # ATR period
+  mult_sl: 1.0                   # SL = ATR * mult_sl
+  mult_tp: 2.0                   # TP = ATR * mult_tp
+points:
+  # Point size per symbol (how big is 1.0 "price point" in the instrument)
+  # For gold quoted to 0.01, 1 "point" = 0.10 (example). Adjust to your convention.
+  XAUUSD: 0.10
+  US30USD: 1.0
+  NAS100USD: 1.0

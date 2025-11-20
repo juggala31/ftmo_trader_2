@@ -1,0 +1,4 @@
+python-dotenv>=1.0.1
+PyYAML>=6.0.2
+# Optional for live/sim
+MetaTrader5>=5.0.45

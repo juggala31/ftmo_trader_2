@@ -1,0 +1,183 @@
+{
+    "profile_name":  "live_all_h1",
+    "description":  "Trader 2.0 AI live profile: all six .sim symbols on H1 with XGBoost + fixed-lot ATR SL/TP.",
+    "global":  {
+                   "dry_run":  false,
+                   "loop_sleep_sec":  5,
+                   "long_threshold":  0.6,
+                   "short_threshold":  0.4
+               },
+    "default_timeframes":  [
+                               "H1"
+                           ],
+    "symbols":  {
+                    "XAUZ25.sim":  {
+                                       "enabled":  true,
+                                       "risk":  {
+                                                    "mode":  "ATR_RISK",
+                                                    "atr_risk_pct":  1.0,
+                                                    "sl_mult":  2.0,
+                                                    "tp_mult":  2.0,
+                                                    "deviation":  80,
+                                                    "stops_buffer_points":  300
+                                                },
+                                       "timeframes":  {
+                                                          "H1":  {
+                                                                     "enabled":  true,
+                                                                     "long_threshold":  0.62,
+                                                                     "short_threshold":  0.38
+                                                                 }
+                                                      }
+                                   },
+                    "US30Z25.sim":  {
+                                        "enabled":  true,
+                                        "risk":  {
+                                                     "mode":  "FIXED_LOT",
+                                                     "lots":  0.10,
+                                                     "sl_mult":  2.0,
+                                                     "tp_mult":  2.0,
+                                                     "deviation":  100,
+                                                     "stops_buffer_points":  200
+                                                 },
+                                        "timeframes":  {
+                                                           "H1":  {
+                                                                      "enabled":  true
+                                                                  }
+                                                       }
+                                    },
+                    "US100Z25.sim":  {
+                                         "enabled":  true,
+                                         "risk":  {
+                                                      "mode":  "FIXED_LOT",
+                                                      "lots":  0.10,
+                                                      "sl_mult":  2.0,
+                                                      "tp_mult":  2.0,
+                                                      "deviation":  100,
+                                                      "stops_buffer_points":  200
+                                                  },
+                                         "timeframes":  {
+                                                            "H1":  {
+                                                                       "enabled":  true
+                                                                   }
+                                                        }
+                                     },
+                    "US500Z25.sim":  {
+                                         "enabled":  true,
+                                         "risk":  {
+                                                      "mode":  "FIXED_LOT",
+                                                      "lots":  0.10,
+                                                      "sl_mult":  2.0,
+                                                      "tp_mult":  2.0,
+                                                      "deviation":  80,
+                                                      "stops_buffer_points":  150
+                                                  },
+                                         "timeframes":  {
+                                                            "H1":  {
+                                                                       "enabled":  true
+                                                                   }
+                                                        }
+                                     },
+                    "USOILZ25.sim":  {
+                                         "enabled":  true,
+                                         "risk":  {
+                                                      "mode":  "FIXED_LOT",
+                                                      "lots":  0.10,
+                                                      "sl_mult":  2.0,
+                                                      "tp_mult":  2.0,
+                                                      "deviation":  80,
+                                                      "stops_buffer_points":  150
+                                                  },
+                                         "timeframes":  {
+                                                            "H1":  {
+                                                                       "enabled":  true
+                                                                   }
+                                                        }
+                                     },
+                    "BTCX25.sim":  {
+                                       "enabled":  true,
+                                       "risk":  {
+                                                    "mode":  "FIXED_LOT",
+                                                    "lots":  0.05,
+                                                    "sl_mult":  2.0,
+                                                    "tp_mult":  2.0,
+                                                    "deviation":  150,
+                                                    "stops_buffer_points":  300
+                                                },
+                                       "timeframes":  {
+                                                          "H1":  {
+                                                                     "enabled":  true
+                                                                 }
+                                                      }
+                                   }
+                },
+    "BTCX25.sim":  {
+                       "enabled":  true,
+                       "risk":  {
+                                    "mode":  "ATR_RISK",
+                                    "atr_risk_pct":  0.25
+                                },
+                       "timeframes":  {
+                                          "H1":  {
+                                                     "enabled":  true,
+                                                     "long_threshold":  0.6,
+                                                     "short_threshold":  0.4
+                                                 }
+                                      }
+                   },
+    "US100Z25.sim":  {
+                         "enabled":  true,
+                         "risk":  {
+                                      "mode":  "ATR_RISK",
+                                      "atr_risk_pct":  0.25
+                                  },
+                         "timeframes":  {
+                                            "H1":  {
+                                                       "enabled":  true,
+                                                       "long_threshold":  0.6,
+                                                       "short_threshold":  0.4
+                                                   }
+                                        }
+                     },
+    "US30Z25.sim":  {
+                        "enabled":  true,
+                        "risk":  {
+                                     "mode":  "ATR_RISK",
+                                     "atr_risk_pct":  0.25
+                                 },
+                        "timeframes":  {
+                                           "H1":  {
+                                                      "enabled":  true,
+                                                      "long_threshold":  0.6,
+                                                      "short_threshold":  0.4
+                                                  }
+                                       }
+                    },
+    "US500Z25.sim":  {
+                         "enabled":  true,
+                         "risk":  {
+                                      "mode":  "ATR_RISK",
+                                      "atr_risk_pct":  0.25
+                                  },
+                         "timeframes":  {
+                                            "H1":  {
+                                                       "enabled":  true,
+                                                       "long_threshold":  0.6,
+                                                       "short_threshold":  0.4
+                                                   }
+                                        }
+                     },
+    "XAUZ25.sim":  {
+                       "enabled":  true,
+                       "risk":  {
+                                    "mode":  "ATR_RISK",
+                                    "atr_risk_pct":  0.25
+                                },
+                       "timeframes":  {
+                                          "H1":  {
+                                                     "enabled":  true,
+                                                     "long_threshold":  0.6,
+                                                     "short_threshold":  0.4
+                                                 }
+                                      }
+                   }
+}

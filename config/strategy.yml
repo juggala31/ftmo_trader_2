@@ -1,0 +1,35 @@
+name: config_strategy
+defaults:
+  interval_sec: 10.0
+  autoclose_ms: 0
+symbols:
+  - name: XAUUSD
+    use_atr: true
+    atr_mult_sl: 1.0
+    atr_mult_tp: 2.0
+    risk_pct: 0.50
+  - name: US30USD
+    use_atr: true
+    atr_mult_sl: 1.0
+    atr_mult_tp: 2.0
+    risk_pct: 0.50
+  - name: NAS100USD
+    use_atr: true
+    atr_mult_sl: 1.0
+    atr_mult_tp: 2.0
+    risk_pct: 0.50
+  - name: EURUSD
+    use_atr: true
+    atr_mult_sl: 1.0
+    atr_mult_tp: 2.0
+    risk_pct: 0.50
+  - name: GBPUSD
+    use_atr: true
+    atr_mult_sl: 1.0
+    atr_mult_tp: 2.0
+    risk_pct: 0.50
+  - name: SPX500USD
+    use_atr: true
+    atr_mult_sl: 1.0
+    atr_mult_tp: 2.0
+    risk_pct: 0.50

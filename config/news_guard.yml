@@ -1,0 +1,27 @@
+enabled: true
+timezone: "UTC"         # evaluate event windows in this TZ
+reason_prefix: "NEWS"
+
+# Minutes to pause *before* and *after* an event by impact level
+windows:
+  high:   { before: 30, after: 30 }
+  medium: { before: 15, after: 15 }
+  low:    { before: 5,  after: 5  }
+
+# Map symbols (or bases) to driving currencies
+symbol_currencies:
+  US30USD:   [USD]
+  NAS100USD: [USD]
+  SPX500USD: [USD]
+  XAUUSD:    [USD]
+  WTICOUSD:  [USD]
+  BTCUSD:    []        # typically unaffected by macro releases (tune if desired)
+
+# Base fallback (used if exact symbol not found; case-insensitive)
+base_currencies:
+  US30:  [USD]
+  US100: [USD]
+  US500: [USD]
+  GOLD:  [USD]
+  OIL:   [USD]
+  BTC:   []

@@ -1,0 +1,49 @@
+symbol,selected,m1_bars_now,last_close,path,trade_mode,visible
+EURNOK.sim,Y,50,11.712400,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 3\EURNOK.sim,4,True
+EURUSD.sim,Y,50,1.155350,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\EURUSD.sim,4,True
+USDJPY.sim,Y,50,146.970000,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\USDJPY.sim,4,True
+GBPUSD.sim,Y,50,1.348430,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\GBPUSD.sim,4,True
+AUDUSD.sim,Y,50,0.653090,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\AUDUSD.sim,4,True
+EURJPY.sim,Y,50,178.315000,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\EURJPY.sim,4,True
+GBPJPY.sim,Y,50,203.139000,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\GBPJPY.sim,4,True
+EURGBP.sim,Y,50,0.877760,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\EURGBP.sim,4,True
+USDCAD.sim,Y,50,1.403100,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\USDCAD.sim,4,True
+USDCHF.sim,Y,50,0.805360,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\USDCHF.sim,4,True
+NZDUSD.sim,Y,50,0.563870,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\NZDUSD.sim,4,True
+AUDCAD.sim,Y,50,0.916290,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\AUDCAD.sim,4,True
+USDZAR.sim,Y,50,17.149400,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 3\USDZAR.sim,4,True
+USDSGD.sim,Y,50,1.303100,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\USDSGD.sim,4,True
+USDSEK.sim,Y,50,9.517320,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\USDSEK.sim,4,True
+USDPLN.sim,Y,50,3.665400,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\USDPLN.sim,4,True
+USDNOK.sim,Y,50,9.909760,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 3\USDNOK.sim,4,True
+USDMXN.sim,Y,50,18.392200,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 4\USDMXN.sim,4,True
+USDHUF.sim,Y,50,332.006000,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\USDHUF.sim,4,True
+USDCZK.sim,Y,50,21.016500,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\USDCZK.sim,4,True
+USDCNH.sim,Y,50,7.123790,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\USDCNH.sim,4,True
+AUDCHF.sim,Y,50,0.525940,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\AUDCHF.sim,4,True
+AUDJPY.sim,Y,50,100.796000,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\AUDJPY.sim,4,True
+AUDNZD.sim,Y,50,1.158170,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\AUDNZD.sim,4,True
+CADCHF.sim,Y,50,0.573960,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\CADCHF.sim,4,True
+CADJPY.sim,Y,50,109.999000,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\CADJPY.sim,4,True
+CHFJPY.sim,Y,50,191.634000,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\CHFJPY.sim,4,True
+EURAUD.sim,Y,50,1.768960,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\EURAUD.sim,4,True
+EURCAD.sim,Y,50,1.620980,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\EURCAD.sim,4,True
+EURCHF.sim,Y,50,0.930450,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\EURCHF.sim,4,True
+EURCZK.sim,Y,50,24.279970,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\EURCZK.sim,4,True
+EURHUF.sim,Y,50,383.631000,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\EURHUF.sim,4,True
+EURNZD.sim,Y,50,2.048830,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\EURNZD.sim,4,True
+EURPLN.sim,Y,50,4.234900,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\EURPLN.sim,4,True
+EURSEK.sim,Y,50,10.996080,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\EURSEK.sim,4,True
+GBPAUD.sim,Y,50,2.015220,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\GBPAUD.sim,4,True
+GBPCAD.sim,Y,50,1.846620,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\GBPCAD.sim,4,True
+GBPCHF.sim,Y,50,1.059980,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\GBPCHF.sim,4,True
+GBPNZD.sim,Y,50,2.334090,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\GBPNZD.sim,4,True
+NZDCAD.sim,Y,50,0.791110,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\NZDCAD.sim,4,True
+NZDCHF.sim,Y,50,0.454090,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 1\NZDCHF.sim,4,True
+NZDJPY.sim,Y,50,87.024000,OANDA Simulation Trading\Simulation Trading - Spot FX - Tier 2\NZDJPY.sim,4,True
+US500Z25.sim,Y,50,6861.100000,OANDA Simulation Trading\Simulated Trading - Indices\US500Z25.sim,4,True
+XAUZ25.sim,Y,50,4139.360000,OANDA Simulation Trading\Simulated Trading - Commodities\XAUZ25.sim,4,True
+US100Z25.sim,Y,50,25744.060000,OANDA Simulation Trading\Simulated Trading - Indices\US100Z25.sim,4,True
+US30Z25.sim,Y,50,47471.600000,OANDA Simulation Trading\Simulated Trading - Indices\US30Z25.sim,4,True
+USOILZ25.sim,Y,50,59.884000,OANDA Simulation Trading\Simulated Trading - Commodities\USOILZ25.sim,4,True
+BTCX25.sim,Y,50,106522.500000,OANDA Simulation Trading\Simulated Trading - Crypto\BTCX25.sim,4,True

@@ -1,0 +1,13 @@
+{
+  "total_trades": 0,
+  "trade_history": [],
+  "phase_index": 0,
+  "phase_name": "Phase 1 — Data Collection",
+  "progress_pct": 0.0,
+  "trades_remaining": 75,
+  "wr_recent": 0.0,
+  "pf_recent": 0.0,
+  "active_min_conf": 0.01,
+  "active_cooldown_s": 60,
+  "active_max_positions": 5
+}

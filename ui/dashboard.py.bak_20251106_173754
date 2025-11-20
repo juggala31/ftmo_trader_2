@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+COLORS = {
+    "BG": "#111317", "PANEL": "#1a1f29", "TEXT": "#e7e9ee", "SUBTEXT": "#b6bdc7",
+    "ACCENT_GREEN": "#2fb170", "ACCENT_RED": "#d04a4a", "ACCENT_BLUE": "#3c7bd6",
+    "ACCENT_AMBER": "#e0a339", "BANNER_RUN": "#0f5d3e", "BANNER_PAUSE": "#6b1f1f"
+}
+
+try:
+    from tools.mt5_flatten_all import mt5_flatten_all
+except Exception:
+    mt5_flatten_all = None
+
+
+class MiniDashboard:
+    REFRESH_MS = 500
+
+    def __init__(self, controller):
+        self.controller = controller
+        self._cached_min_conf = 0.50
+        self._last_status_rows = []
+        self._symbols_cache = []
+
+        # === Root ===
+        self.root = tk.Tk()
+        self.root.title("FTMO Trader — Dashboard")
+        self.root.configure(bg=COLORS["BG"])
+
+        # === Banner ===
+        self.banner_var = tk.StringVar(value="PAUSED")
+        self.banner = tk.Label(self.root, textvariable=self.banner_var,
+                               font=("Segoe UI", 20, "bold"),
+                               bg=COLORS["BANNER_PAUSE"], fg="white", pady=6)
+        self.banner.pack(fill="x", padx=0, pady=(0, 8))
+
+        # === Controls row ===
+        controls = tk.Frame(self.root, bg=COLORS["PANEL"])
+        controls.pack(fill="x", padx=10, pady=(0, 10))
+        btn = {"font": ("Segoe UI", 11, "bold"), "width": 14}
+        tk.Button(controls, text="▶ RESUME", command=self.on_resume,
+                  bg=COLORS["ACCENT_GREEN"], fg="white", **btn).pack(side="left", padx=6, pady=8)
+        tk.Button(controls, text="⏸ PAUSE", command=self.on_pause,
+                  bg=COLORS["ACCENT_RED"], fg="white", **btn).pack(side="left", padx=6, pady=8)
+        self.autopause_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(controls, text="Auto-pause", variable=self.autopause_var,
+                       command=self.on_toggle_autopause, bg=COLORS["PANEL"],
+                       fg=COLORS["TEXT"], selectcolor=COLORS["BG"],
+                       font=("Segoe UI", 10, "bold")).pack(side="left", padx=12)
+        tk.Button(controls, text="❎ CLOSE ALL", command=self.on_close_all,
+                  bg=COLORS["ACCENT_RED"], fg="white", **btn).pack(side="left", padx=6, pady=8)
+
+        # === AI panel (MIN_CONF) ===
+        ai_panel = tk.Frame(self.root, bg=COLORS["PANEL"])
+        ai_panel.pack(fill="x", padx=10, pady=(0, 10))
+        tk.Label(ai_panel, text="MIN_CONF", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 10, "bold")).pack(side="left", padx=(10, 6), pady=8)
+        self.min_conf_var = tk.DoubleVar(value=self._get_min_conf_initial())
+        self.min_conf_scale = tk.Scale(ai_panel, from_=0.0, to=1.0, resolution=0.01,
+                                       orient="horizontal", length=240,
+                                       variable=self.min_conf_var, bg=COLORS["PANEL"],
+                                       fg=COLORS["TEXT"], troughcolor="#2a3446",
+                                       highlightthickness=0, command=self.on_min_conf_change)
+        self.min_conf_scale.pack(side="left", padx=6)
+        self.min_conf_label = tk.Label(ai_panel, text=f"{self.min_conf_var.get():0.2f}",
+                                       bg=COLORS["PANEL"], fg=COLORS["TEXT"],
+                                       font=("Segoe UI", 10, "bold"))
+        self.min_conf_label.pack(side="left", padx=8)
+
+        # === Manual Trade panel ===
+        trade_panel = tk.Frame(self.root, bg=COLORS["PANEL"])
+        trade_panel.pack(fill="x", padx=10, pady=(0, 10))
+
+        tk.Label(trade_panel, text="Symbol", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 10, "bold")).pack(side="left", padx=(10, 6), pady=8)
+        self.symbol_var = tk.StringVar(value="")
+        self.symbol_combo = ttk.Combobox(trade_panel, textvariable=self.symbol_var, width=18, state="readonly")
+        self.symbol_combo.pack(side="left", padx=6, pady=6)
+
+        tk.Label(trade_panel, text="Volume", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 10, "bold")).pack(side="left", padx=(14, 6), pady=8)
+        self.vol_var = tk.StringVar(value=self._get_default_lot_size())
+        vol_entry = tk.Entry(trade_panel, textvariable=self.vol_var, width=10,
+                             bg=COLORS["BG"], fg=COLORS["TEXT"], insertbackground=COLORS["TEXT"])
+        vol_entry.pack(side="left", padx=6, pady=6)
+
+        # Sizing mode + live preview
+        sizing_frame = tk.Frame(trade_panel, bg=COLORS["PANEL"])
+        sizing_frame.pack(side="left", padx=(18,6), pady=6)
+        tk.Label(sizing_frame, text="Sizing", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self.sizing_mode_var = tk.StringVar(value=self._get_initial_sizing_mode())
+        self.sizing_combo = ttk.Combobox(sizing_frame, textvariable=self.sizing_mode_var,
+                                         width=12, state="readonly",
+                                         values=["FIXED_LOT","ATR_RISK"])
+        self.sizing_combo.pack(anchor="w", pady=(2,0))
+        self.sizing_combo.bind("<<ComboboxSelected>>", self.on_sizing_mode_change)
+
+        self.size_preview_var = tk.StringVar(value="Size: n/a")
+        self.size_preview_lbl = tk.Label(trade_panel, textvariable=self.size_preview_var,
+                                         bg=COLORS["PANEL"], fg=COLORS["TEXT"],
+                                         font=("Segoe UI", 10, "bold"))
+        self.size_preview_lbl.pack(side="left", padx=(18,6))
+        self.vol_var.trace_add("write", lambda *a: self._update_size_preview())
+        self.symbol_combo.bind("<<ComboboxSelected>>", lambda _e: self._update_size_preview())
+
+        buy_btn = tk.Button(trade_panel, text="BUY", command=lambda: self.on_manual_order("BUY"),
+                            bg=COLORS["ACCENT_GREEN"], fg="white", font=("Segoe UI", 11, "bold"), width=10)
+        sell_btn = tk.Button(trade_panel, text="SELL", command=lambda: self.on_manual_order("SELL"),
+                             bg=COLORS["ACCENT_RED"], fg="white", font=("Segoe UI", 11, "bold"), width=10)
+        buy_btn.pack(side="left", padx=(12,6), pady=8)
+        sell_btn.pack(side="left", padx=6, pady=8)
+
+        # === Risk panel (Break-Even + Trailing) ===
+        risk = tk.Frame(self.root, bg=COLORS["PANEL"])
+        risk.pack(fill="x", padx=10, pady=(0,10))
+
+        # Break-Even
+        be_box = tk.Frame(risk, bg=COLORS["PANEL"])
+        be_box.pack(side="left", padx=(10, 18), pady=8)
+        self.be_enable = tk.BooleanVar(value=self._get_from_ctrl("BE_ENABLE", False))
+        tk.Checkbutton(be_box, text="Break-Even", variable=self.be_enable,
+                       command=self.on_be_toggle, bg=COLORS["PANEL"],
+                       fg=COLORS["TEXT"], selectcolor=COLORS["BG"],
+                       font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        be_row = tk.Frame(be_box, bg=COLORS["PANEL"]); be_row.pack(anchor="w", pady=(4,0))
+        tk.Label(be_row, text="Trigger (pips)", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0,6))
+        self.be_trigger = tk.StringVar(value=str(self._get_from_ctrl("BE_TRIGGER_PIPS", 50)))
+        self.be_trigger_entry = tk.Entry(be_row, textvariable=self.be_trigger, width=8,
+                                         bg=COLORS["BG"], fg=COLORS["TEXT"], insertbackground=COLORS["TEXT"])
+        self.be_trigger_entry.pack(side="left", padx=(0,10))
+        tk.Label(be_row, text="Lock (pips)", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0,6))
+        self.be_lock = tk.StringVar(value=str(self._get_from_ctrl("BE_LOCK_PIPS", 5)))
+        self.be_lock_entry = tk.Entry(be_row, textvariable=self.be_lock, width=8,
+                                      bg=COLORS["BG"], fg=COLORS["TEXT"], insertbackground=COLORS["TEXT"])
+        self.be_lock_entry.pack(side="left")
+        # Apply on change
+        self.be_trigger.trace_add("write", lambda *_: self._apply_be())
+        self.be_lock.trace_add("write", lambda *_: self._apply_be())
+
+        # Trailing
+        tr_box = tk.Frame(risk, bg=COLORS["PANEL"])
+        tr_box.pack(side="left", padx=(10, 0), pady=8)
+        self.tr_enable = tk.BooleanVar(value=self._get_from_ctrl("TRAIL_ENABLE", False))
+        tk.Checkbutton(tr_box, text="Trailing", variable=self.tr_enable,
+                       command=self.on_tr_toggle, bg=COLORS["PANEL"],
+                       fg=COLORS["TEXT"], selectcolor=COLORS["BG"],
+                       font=("Segoe UI", 10, "bold")).pack(anchor="w")
+
+        tr_row1 = tk.Frame(tr_box, bg=COLORS["PANEL"]); tr_row1.pack(anchor="w", pady=(4,0))
+        tk.Label(tr_row1, text="Type", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0,6))
+        self.tr_type = tk.StringVar(value=str(self._get_from_ctrl("TRAIL_TYPE", "ATR")).upper())
+        self.tr_type_combo = ttk.Combobox(tr_row1, textvariable=self.tr_type, width=8, state="readonly",
+                                          values=["ATR","PIPS"])
+        self.tr_type_combo.pack(side="left", padx=(0,12))
+        self.tr_type_combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_trailing())
+
+        tr_row2 = tk.Frame(tr_box, bg=COLORS["PANEL"]); tr_row2.pack(anchor="w", pady=(4,0))
+        tk.Label(tr_row2, text="ATR x", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0,6))
+        self.tr_atr_mult = tk.StringVar(value=str(self._get_from_ctrl("TRAIL_ATR_MULT", 1.0)))
+        self.tr_atr_entry = tk.Entry(tr_row2, textvariable=self.tr_atr_mult, width=8,
+                                     bg=COLORS["BG"], fg=COLORS["TEXT"], insertbackground=COLORS["TEXT"])
+        self.tr_atr_entry.pack(side="left", padx=(0,12))
+        tk.Label(tr_row2, text="Step (pips)", bg=COLORS["PANEL"], fg=COLORS["SUBTEXT"],
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0,6))
+        self.tr_step = tk.StringVar(value=str(self._get_from_ctrl("TRAIL_STEP_PIPS", 20)))
+        self.tr_step_entry = tk.Entry(tr_row2, textvariable=self.tr_step, width=8,
+                                      bg=COLORS["BG"], fg=COLORS["TEXT"], insertbackground=COLORS["TEXT"])
+        self.tr_step_entry.pack(side="left")
+
+        self.tr_atr_mult.trace_add("write", lambda *_: self._apply_trailing())
+        self.tr_step.trace_add("write", lambda *_: self._apply_trailing())
+
+        # === Status line ===
+        status = tk.Frame(self.root, bg=COLORS["PANEL"])
+        status.pack(fill="x", padx=10, pady=(0, 10))
+        self.status_var = tk.StringVar(value="Status: N/A")
+        tk.Label(status, textvariable=self.status_var, bg=COLORS["PANEL"],
+                 fg=COLORS["TEXT"], anchor="w", font=("Segoe UI", 10)
+                 ).pack(fill="x", padx=8, pady=8)
+
+        # === Symbols table ===
+        table = tk.Frame(self.root, bg=COLORS["BG"])
+        table.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        cols = ("canonical","broker","state","last_price","conf","action")
+        self.tree = ttk.Treeview(table, columns=cols, show="headings", height=14)
+        for c, t, w, a in [
+            ("canonical","Canonical",120,"w"), ("broker","Broker Symbol",160,"w"),
+            ("state","State",90,"center"), ("last_price","Last Price",110,"e"),
+            ("conf","Confidence",100,"e"), ("action","Action",100,"center")
+        ]:
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, anchor=a)
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self.on_table_select)
+
+        # Initial enable/disable states for risk inputs
+        self._sync_be_widgets()
+        self._sync_tr_widgets()
+
+        # Start refresh loop
+        self.root.after(self.REFRESH_MS, self._refresh_status)
+
+    # ===== Helpers =====
+    def _flash(self, msg: str, color: str):
+        self.banner_var.set(msg)
+        self.banner.configure(bg=color)
+        self.root.after(900, self._update_banner_state)
+
+    def _update_banner_state(self):
+        running = False
+        try:
+            st = self.controller.get_status()
+            running = bool(st.get("running", False))
+        except Exception:
+            pass
+        self.banner_var.set("RUNNING" if running else "PAUSED")
+        self.banner.configure(bg=COLORS["BANNER_RUN" if running else "BANNER_PAUSE"])
+
+    def _get_min_conf_initial(self) -> float:
+        try:
+            if hasattr(self.controller, "get_min_conf"):
+                return float(self.controller.get_min_conf())
+            elif hasattr(self(self.controller, "get_param")):
+                v = self.controller.get_param("MIN_CONF")
+                return float(v if v is not None else self._cached_min_conf)
+            elif hasattr(self.controller, "MIN_CONF"):
+                return float(getattr(self.controller, "MIN_CONF"))
+        except Exception:
+            pass
+        return float(self._cached_min_conf)
+
+    def _get_default_lot_size(self) -> str:
+        try:
+            if hasattr(self.controller, "LOT_SIZE"):
+                v = float(getattr(self.controller, "LOT_SIZE")); return f"{v:g}"
+        except Exception:
+            pass
+        return "1.0"
+
+    def _get_initial_sizing_mode(self) -> str:
+        try:
+            if hasattr(self.controller, "SIZING_MODE"):
+                v = str(getattr(self.controller, "SIZING_MODE")).upper()
+                if v in ("FIXED_LOT","ATR_RISK"): return v
+        except Exception:
+            pass
+        return "FIXED_LOT"
+
+    def _last_price_for_symbol(self, broker_symbol: str):
+        for r in self._last_status_rows:
+            if r.get("broker") == broker_symbol:
+                return r.get("last_price")
+        return None
+
+    def _get_from_ctrl(self, name, default=None):
+        try:
+            return getattr(self.controller, name)
+        except Exception:
+            return default
+
+    def _update_size_preview(self, *_):
+        sym = (self.symbol_var.get() or "").strip()
+        mode = (self.sizing_mode_var.get() or "FIXED_LOT").upper()
+        if not sym:
+            self.size_preview_var.set("Size: n/a"); return
+        try:
+            req_vol = float(self.vol_var.get())
+            if req_vol <= 0: raise ValueError()
+        except Exception:
+            try:
+                req_vol = float(self._get_default_lot_size())
+            except Exception:
+                req_vol = 1.0
+
+        if mode != "ATR_RISK":
+            self.size_preview_var.set(f"Size: {req_vol:g} lots (FIXED)"); return
+
+        px = self._last_price_for_symbol(sym)
+        if px is None:
+            self.size_preview_var.set("Size: n/a (no price)"); return
+        try:
+            if hasattr(self.controller, "_compute_volume"):
+                lots, _ = self.controller._compute_volume(req_vol, "BUY", px, sym)
+                self.size_preview_var.set(f"Size: {float(lots):g} lots (ATR_RISK)")
+            else:
+                self.size_preview_var.set("Size: n/a (no sizer)")
+        except Exception as e:
+            self.size_preview_var.set(f"Size: n/a ({e})")
+
+    def _sync_be_widgets(self):
+        ena = "normal" if self.be_enable.get() else "disabled"
+        self.be_trigger_entry.configure(state=ena)
+        self.be_lock_entry.configure(state=ena)
+
+    def _sync_tr_widgets(self):
+        ena = "normal" if self.tr_enable.get() else "disabled"
+        self.tr_type_combo.configure(state="readonly" if self.tr_enable.get() else "disabled")
+        self.tr_atr_entry.configure(state=ena)
+        self.tr_step_entry.configure(state=ena)
+
+    # ===== Handlers =====
+    def on_resume(self):
+        try:
+            if hasattr(self.controller, "resume"): self.controller.resume()
+        except Exception as e:
+            messagebox.showerror("Resume failed", str(e))
+        self._flash("Resuming…", COLORS["ACCENT_BLUE"])
+
+    def on_pause(self):
+        try:
+            if hasattr(self.controller, "pause"): self.controller.pause()
+        except Exception as e:
+            messagebox.showerror("Pause failed", str(e))
+        self._flash("Pausing…", COLORS["ACCENT_AMBER"])
+
+    def on_toggle_autopause(self):
+        v = bool(self.autopause_var.get())
+        try:
+            if hasattr(self.controller, "set_autopause"): self.controller.set_autopause(v)
+        except Exception as e:
+            messagebox.showerror("Autopause toggle failed", str(e))
+        self._flash(f"Auto-pause → {v}", COLORS["ACCENT_BLUE"])
+
+    def on_close_all(self):
+        def worker():
+            try:
+                if mt5_flatten_all:
+                    ok, info = mt5_flatten_all()
+                    if ok: self._flash("Close All sent.", COLORS["ACCENT_GREEN"])
+                    else:  self._flash(f"Close All failed: {info}", COLORS["ACCENT_RED"])
+                else:
+                    self._flash("Close All not available.", COLORS["ACCENT_RED"])
+            except Exception as e:
+                self._flash(f"Close All error: {e}", COLORS["ACCENT_RED"])
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_min_conf_change(self, _evt=None):
+        self.min_conf_label.config(text=f"{self.min_conf_var.get():0.2f}")
+        try:
+            v = float(self.min_conf_var.get())
+            if hasattr(self.controller, "set_min_conf"):
+                self.controller.set_min_conf(v); return
+            if hasattr(self.controller, "set_param"):
+                self.controller.set_param("MIN_CONF", v); return
+            if hasattr(self.controller, "MIN_CONF"):
+                setattr(self.controller, "MIN_CONF", v); return
+        except Exception as e:
+            self._flash(f"MIN_CONF apply failed: {e}", COLORS["ACCENT_RED"])
+
+    def on_sizing_mode_change(self, _evt=None):
+        mode = (self.sizing_mode_var.get() or "FIXED_LOT").upper()
+        try:
+            if hasattr(self.controller, "set_sizing_mode"):
+                self.controller.set_sizing_mode(mode)
+            elif hasattr(self.controller, "SIZING_MODE"):
+                setattr(self.controller, "SIZING_MODE", mode)
+        except Exception:
+            pass
+        self._update_size_preview()
+
+    def on_manual_order(self, side: str):
+        sym = (self.symbol_var.get() or "").strip()
+        if not sym:
+            self._flash("❌ Pick a symbol first.", COLORS["ACCENT_RED"]); return
+        try:
+            vol = float(self.vol_var.get())
+            if vol <= 0: raise ValueError("Volume must be > 0")
+        except Exception as e:
+            self._flash(f"❌ Bad volume: {e}", COLORS["ACCENT_RED"]); return
+
+        def worker():
+            try:
+                if hasattr(self.controller, "order_market"):
+                    ok, res = self.controller.order_market(sym, side.upper(), vol, reason="manual")
+                    if ok: self._flash(f"✅ {side} {sym} vol={vol:g} sent", COLORS["ACCENT_GREEN"])
+                    else:  self._flash(f"❌ {side} {sym} failed: {res}", COLORS["ACCENT_RED"])
+                else:
+                    self._flash("❌ controller has no order_market()", COLORS["ACCENT_RED"])
+            except Exception as e:
+                self._flash(f"❌ Manual order error: {e}", COLORS["ACCENT_RED"])
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_table_select(self, _evt=None):
+        try:
+            sel = self.tree.selection()
+            if not sel: return
+            vals = self.tree.item(sel[0], "values")
+            broker = vals[1]
+            if broker:
+                self.symbol_var.set(broker)
+                self._update_size_preview()
+        except Exception:
+            pass
+
+    def on_be_toggle(self):
+        self._sync_be_widgets()
+        self._apply_be()
+
+    def _apply_be(self):
+        try:
+            enable = bool(self.be_enable.get())
+            trig = float(self.be_trigger.get())
+            lock = float(self.be_lock.get())
+        except Exception:
+            return
+        try:
+            if hasattr(self.controller, "set_break_even"):
+                self.controller.set_break_even(enable, trig, lock)
+            else:
+                setattr(self.controller, "BE_ENABLE", enable)
+                setattr(self.controller, "BE_TRIGGER_PIPS", trig)
+                setattr(self.controller, "BE_LOCK_PIPS", lock)
+        except Exception:
+            pass
+
+    def on_tr_toggle(self):
+        self._sync_tr_widgets()
+        self._apply_trailing()
+
+    def _apply_trailing(self):
+        try:
+            enable = bool(self.tr_enable.get())
+            ttype  = (self.tr_type.get() or "ATR").upper()
+            atrx   = float(self.tr_atr_mult.get())
+            step   = float(self.tr_step.get())
+        except Exception:
+            return
+        try:
+            if hasattr(self.controller, "set_trailing"):
+                self.controller.set_trailing(enable, ttype, atrx, step)
+            else:
+                setattr(self.controller, "TRAIL_ENABLE", enable)
+                setattr(self.controller, "TRAIL_TYPE", ttype)
+                setattr(self.controller, "TRAIL_ATR_MULT", atrx)
+                setattr(self.controller, "TRAIL_STEP_PIPS", step)
+        except Exception:
+            pass
+
+    # ===== Periodic refresh =====
+    def _refresh_status(self):
+        try:
+            st = self.controller.get_status() if hasattr(self.controller, "get_status") else {}
+        except Exception:
+            st = {}
+
+        running = bool(st.get("running", False))
+        self.banner_var.set("RUNNING" if running else "PAUSED")
+        self.banner.configure(bg=COLORS["BANNER_RUN" if running else "BANNER_PAUSE"])
+        if "autopause" in st:
+            try: self.autopause_var.set(bool(st.get("autopause", False)))
+            except Exception: pass
+
+        status_text = st.get("status_text") or st.get("status") or "N/A"
+        self.status_var.set(f"Status: {status_text}")
+
+        rows = st.get("rows") or st.get("symbols") or []
+        if not isinstance(rows, (list, tuple)): rows = []
+        self._last_status_rows = rows
+
+        brokers = [r.get("broker") for r in rows if r.get("broker")]
+        if brokers != self._symbols_cache:
+            self._symbols_cache = brokers
+            try:
+                self.symbol_combo["values"] = brokers
+                if not self.symbol_var.get() and brokers:
+                    self.symbol_var.set(brokers[0])
+            except Exception:
+                pass
+
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+        for r in rows:
+            vals = (
+                r.get("canonical",""),
+                r.get("broker",""),
+                r.get("state",""),
+                f"{r.get('last_price','')}",
+                f"{r.get('confidence','')}",
+                r.get("action",""),
+            )
+            self.tree.insert("", "end", values=vals)
+
+        self._update_size_preview()
+        self.root.after(self.REFRESH_MS, self._refresh_status)
+
+    # ===== Public =====
+    def mainloop(self):
+        self.root.mainloop()
+
+    def run(self):
+        return self.mainloop()

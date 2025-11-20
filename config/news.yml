@@ -1,0 +1,13 @@
+# Times are local to the app timezone in ftmo.yml (ops.timezone).
+# Each event has an ISO-like local datetime and a pause window (minutes before/after).
+events:
+  - name: NFP
+    when: 2025-12-05 08:30
+    before_min: 10
+    after_min: 10
+  - name: CPI
+    when: 2025-12-11 08:30
+    before_min: 10
+    after_min: 10
+# Set to true to enable; can also be toggled in the UI checkbox.
+enabled: true

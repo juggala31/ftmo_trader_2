@@ -1,0 +1,8 @@
+name: Aggressive
+overrides:
+  time_windows:
+    allowed:
+      XAUUSD:  ["00:00-23:59"]
+      US30USD: ["06:30-22:00"]
+  daily_limits:
+    daily_loss_cap: -2000

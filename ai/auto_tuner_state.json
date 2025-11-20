@@ -1,0 +1,26 @@
+{
+  "status": {
+    "BTCX25.sim": "live",
+    "US100Z25.sim": "live",
+    "US30Z25.sim": "live",
+    "US500Z25.sim": "live",
+    "XAUZ25.sim": "live",
+    "USOILZ25.sim": "live"
+  },
+  "weak_streak": {
+    "BTCX25.sim": 0,
+    "US100Z25.sim": 0,
+    "US30Z25.sim": 0,
+    "US500Z25.sim": 0,
+    "XAUZ25.sim": 0,
+    "USOILZ25.sim": 0
+  },
+  "bucket": {
+    "US30Z25.sim": "strong",
+    "US500Z25.sim": "strong",
+    "BTCX25.sim": "strong",
+    "XAUZ25.sim": "strong",
+    "US100Z25.sim": "strong",
+    "USOILZ25.sim": "strong"
+  }
+}

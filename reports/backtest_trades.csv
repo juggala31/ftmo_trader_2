@@ -1,0 +1,3 @@
+symbol,side,entry,exit,size,opened_at,closed_at,pnl
+US30USD,SELL,100.90000,102.23333,375.0000,1,9,-500.00
+US30USD,BUY,102.00000,103.80000,446.7701,13,19,804.19

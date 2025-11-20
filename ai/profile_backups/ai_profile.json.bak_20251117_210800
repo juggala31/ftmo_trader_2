@@ -1,0 +1,183 @@
+{
+  "BTCX25.sim": {
+    "enabled": true,
+    "risk": {
+      "atr_risk_pct": 0.15,
+      "mode": "ATR_RISK"
+    },
+    "timeframes": {
+      "H1": {
+        "enabled": true,
+        "long_threshold": 0.62,
+        "short_threshold": 0.38
+      }
+    }
+  },
+  "US100Z25.sim": {
+    "enabled": true,
+    "risk": {
+      "atr_risk_pct": 0.25,
+      "mode": "ATR_RISK"
+    },
+    "timeframes": {
+      "H1": {
+        "enabled": true,
+        "long_threshold": 0.6,
+        "short_threshold": 0.4
+      }
+    }
+  },
+  "US30Z25.sim": {
+    "enabled": true,
+    "risk": {
+      "atr_risk_pct": 0.15,
+      "mode": "ATR_RISK"
+    },
+    "timeframes": {
+      "H1": {
+        "enabled": true,
+        "long_threshold": 0.62,
+        "short_threshold": 0.38
+      }
+    }
+  },
+  "US500Z25.sim": {
+    "enabled": true,
+    "risk": {
+      "atr_risk_pct": 0.15,
+      "mode": "ATR_RISK"
+    },
+    "timeframes": {
+      "H1": {
+        "enabled": true,
+        "long_threshold": 0.62,
+        "short_threshold": 0.38
+      }
+    }
+  },
+  "XAUZ25.sim": {
+    "enabled": true,
+    "risk": {
+      "atr_risk_pct": 0.25,
+      "mode": "ATR_RISK"
+    },
+    "timeframes": {
+      "H1": {
+        "enabled": true,
+        "long_threshold": 0.6,
+        "short_threshold": 0.4
+      }
+    }
+  },
+  "default_timeframes": [
+    "H1"
+  ],
+  "description": "Trader 2.0 AI live profile: all six .sim symbols on H1 with XGBoost + fixed-lot ATR SL/TP.",
+  "global": {
+    "dry_run": false,
+    "long_threshold": 0.6,
+    "loop_sleep_sec": 5,
+    "short_threshold": 0.4
+  },
+  "profile_name": "live_all_h1",
+  "symbols": {
+    "BTCX25.sim": {
+      "enabled": true,
+      "risk": {
+        "deviation": 150,
+        "lots": 0.05,
+        "mode": "FIXED_LOT",
+        "sl_mult": 2.0,
+        "stops_buffer_points": 300,
+        "tp_mult": 2.0
+      },
+      "timeframes": {
+        "H1": {
+          "enabled": true
+        }
+      }
+    },
+    "US100Z25.sim": {
+      "enabled": true,
+      "risk": {
+        "deviation": 100,
+        "lots": 0.1,
+        "mode": "FIXED_LOT",
+        "sl_mult": 2.0,
+        "stops_buffer_points": 200,
+        "tp_mult": 2.0
+      },
+      "timeframes": {
+        "H1": {
+          "enabled": true
+        }
+      }
+    },
+    "US30Z25.sim": {
+      "enabled": true,
+      "risk": {
+        "deviation": 100,
+        "lots": 0.1,
+        "mode": "FIXED_LOT",
+        "sl_mult": 2.0,
+        "stops_buffer_points": 200,
+        "tp_mult": 2.0
+      },
+      "timeframes": {
+        "H1": {
+          "enabled": true
+        }
+      }
+    },
+    "US500Z25.sim": {
+      "enabled": true,
+      "risk": {
+        "deviation": 80,
+        "lots": 0.1,
+        "mode": "FIXED_LOT",
+        "sl_mult": 2.0,
+        "stops_buffer_points": 150,
+        "tp_mult": 2.0
+      },
+      "timeframes": {
+        "H1": {
+          "enabled": true
+        }
+      }
+    },
+    "USOILZ25.sim": {
+      "enabled": true,
+      "risk": {
+        "deviation": 80,
+        "lots": 0.1,
+        "mode": "FIXED_LOT",
+        "sl_mult": 2.0,
+        "stops_buffer_points": 150,
+        "tp_mult": 2.0
+      },
+      "timeframes": {
+        "H1": {
+          "enabled": true
+        }
+      }
+    },
+    "XAUZ25.sim": {
+      "enabled": true,
+      "risk": {
+        "atr_risk_pct": 1.0,
+        "deviation": 80,
+        "mode": "ATR_RISK",
+        "sl_mult": 2.0,
+        "stops_buffer_points": 300,
+        "tp_mult": 2.0
+      },
+      "timeframes": {
+        "H1": {
+          "enabled": true,
+          "long_threshold": 0.62,
+          "short_threshold": 0.38
+        }
+      }
+    }
+  }
+}

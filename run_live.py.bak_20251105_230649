@@ -1,0 +1,730 @@
+#!/usr/bin/env python3
+"""
+run_live.py — live runner with:
+- Tk dashboard attach
+- Execution logging (TradeLogger or CSV)
+- FTMO enforcer (env-configured)
+- Per-symbol entry guards (in-flight + cooldown)
+- SL/TP placement:
+    • SLTP_MODE=FIXED → FIXED_PIPS + TP_MULT
+    • SLTP_MODE=ATR   → ATR_TF/ATR_PERIOD/ATR_BARS + ATR_MULT_SL/ATR_MULT_TP (+ ATR_MIN_PIPS)
+- Sizing:
+    • SIZING_MODE=FIXED_LOT → LOT_SIZE
+    • SIZING_MODE=ATR_RISK  → RISK_PCT (risk % per trade) using SL distance (ATR/FIXED)
+    • NEW: per-symbol overrides via env: RISK_PCT_<CANON>, SIZE_MIN_<CANON>, SIZE_MAX_<CANON>
+- Robust success detection: MT5 retcode 10009 (“Request executed”) counts as OK
+- GUI shows live Last Price per symbol
+"""
+
+import os, sys, time, json, threading, traceback, argparse, datetime
+from typing import Dict, Any, List, Optional, Tuple
+from pathlib import Path
+
+# ---------------- .env loader ----------------
+def load_dotenv(path: str = ".env") -> None:
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                k = k.strip(); v = v.strip()
+                if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                    v = v[1:-1]
+                os.environ.setdefault(k, v)
+    except Exception:
+        print("[env] warning: failed to parse .env", file=sys.stderr)
+
+load_dotenv(".env")
+
+# ------------- helpers -------------
+def getenv_float(name: str, default: float) -> float:
+    try: return float(os.environ.get(name, default))
+    except Exception: return float(default)
+
+def getenv_int(name: str, default: int) -> int:
+    try: return int(float(os.environ.get(name, default)))
+    except Exception: return int(default)
+
+def getenv_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name, None)
+    if v is None: return default
+    return str(v).strip().lower() in ("1","true","yes","y","on")
+
+def parse_symbols(env_value: Optional[str]) -> List[str]:
+    if not env_value: return []
+    return [p.strip() for p in env_value.split(",") if p.strip()]
+
+def _retcode_ok(retcode, comment: Optional[str]) -> bool:
+    try:
+        if retcode == 10009:  # TRADE_RETCODE_DONE
+            return True
+    except Exception:
+        pass
+    if comment and "Request executed" in str(comment):
+        return True
+    return False
+
+# ------------- optional imports -------------
+MT5 = None
+try:
+    import MetaTrader5 as _mt5
+    MT5 = _mt5
+except Exception:
+    MT5 = None
+
+Adapter = None
+try:
+    from brokers.mt5_adapter import MT5Adapter as _Adapter
+    Adapter = _Adapter
+except Exception as e:
+    print(f"[brokers] adapter import failed: {e}")
+
+FTMO = None
+try:
+    from risk.ftmo_enforcer import FTMOEnforcer as _FTMO
+    FTMO = _FTMO
+except Exception as e:
+    print(f"[risk] ftmo_enforcer import failed: {e}")
+
+MiniDashboard = None
+try:
+    from ui.dashboard import MiniDashboard as _MiniDashboard
+    MiniDashboard = _MiniDashboard
+except Exception as e:
+    print(f"[ui] dashboard import failed: {e}")
+
+ATR_HELPER = None
+try:
+    from tools.atr_helper import get_atr as _get_atr
+    ATR_HELPER = _get_atr
+except Exception as e:
+    ATR_HELPER = None
+    print(f"[tools] atr_helper unavailable: {e}")
+
+POS_SIZER = None
+try:
+    from tools.position_sizer import compute_lot as _compute_lot
+    POS_SIZER = _compute_lot
+except Exception as e:
+    POS_SIZER = None
+    print(f"[tools] position_sizer unavailable: {e}")
+
+# ------------- logging -------------
+class _CsvFallbackLogger:
+    def __init__(self, csv_path: Path):
+        self.csv_path = Path(csv_path)
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.csv_path.exists() or self.csv_path.stat().st_size == 0:
+            self.csv_path.write_text("ts,iso,profile,symbol,side,volume,price,retcode,comment,ticket,reason,extra\n", encoding="utf-8")
+    def log(self, **kwargs):
+        ts = time.time()
+        iso = datetime.datetime.utcfromtimestamp(ts).isoformat()
+        row = {
+            "ts": f"{ts:.3f}",
+            "iso": iso,
+            "profile": kwargs.get("profile",""),
+            "symbol": kwargs.get("symbol",""),
+            "side": kwargs.get("side",""),
+            "volume": kwargs.get("volume",""),
+            "price": kwargs.get("price",""),
+            "retcode": kwargs.get("retcode",""),
+            "comment": kwargs.get("comment",""),
+            "ticket": kwargs.get("ticket",""),
+            "reason": kwargs.get("reason",""),
+            "extra": json.dumps(kwargs.get("extra", {}), ensure_ascii=False),
+        }
+        with self.csv_path.open("a", encoding="utf-8", newline="") as f:
+            f.write(",".join([str(row[k]) for k in ("ts","iso","profile","symbol","side","volume","price","retcode","comment","ticket","reason","extra")]) + "\n")
+
+class ExecLogger:
+    def __init__(self, profile: str, enabled: bool = True):
+        self.profile = profile
+        self.enabled = enabled
+        self._impl = None
+        if not enabled:
+            print("[logger] execution logging disabled")
+            return
+        try:
+            from trade_logger import TradeLogger
+            data_dir = Path("data"); data_dir.mkdir(parents=True, exist_ok=True)
+            self._impl = TradeLogger(csv_path=data_dir / "trades.csv", db_path=data_dir / "trades.db")
+            print("[logger] using TradeLogger (csv+sqlite)")
+        except Exception as e:
+            print(f"[logger] TradeLogger unavailable ({e}); using CSV fallback")
+            self._impl = _CsvFallbackLogger(Path("data") / "trades.csv")
+    def log_event(self, **kwargs):
+        if not self.enabled or not self._impl:
+            return
+        kwargs.setdefault("profile", self.profile)
+        try:
+            if hasattr(self._impl, "log_event"): self._impl.log_event(**kwargs)
+            elif hasattr(self._impl, "log"):    self._impl.log(**kwargs)
+        except Exception as e:
+            print(f"[logger] log_event failed: {e}")
+
+# ------------- controller -------------
+class TradingController:
+    def __init__(self, profile: str, adapter, ftmo_guard, exec_logger: ExecLogger, args: argparse.Namespace):
+        self.profile = profile
+        self.adapter = adapter
+        self.ftmo = ftmo_guard
+        self.exec_logger = exec_logger
+        self.args = args
+
+        self._running = False
+        self._autopause = False
+        self._stop = False
+        self._t0 = time.time()
+        self._last_hb_print = 0.0
+
+        # Strategy thresholds
+        self.MIN_CONF = getenv_float("MIN_CONF", 0.50)
+
+        # Guardrails
+        self.ENTRY_COOLDOWN_SEC = getenv_float("ENTRY_COOLDOWN_SEC", 30.0)
+        self.INFLIGHT_SEC = getenv_float("INFLIGHT_SEC", 2.0)
+
+        # Sizing (global defaults)
+        self.SIZING_MODE = os.environ.get("SIZING_MODE", "FIXED_LOT").upper()
+        self.LOT_SIZE = getenv_float("LOT_SIZE", 0.10)   # when FIXED_LOT
+        self.RISK_PCT = getenv_float("RISK_PCT", 0.5)    # when ATR_RISK
+        self.SIZE_MIN = getenv_float("SIZE_MIN", 0.0)    # optional clamp
+        self.SIZE_MAX = getenv_float("SIZE_MAX", 0.0)
+
+        # SLTP config
+        self.SLTP_MODE = os.environ.get("SLTP_MODE", "FIXED").upper()
+        self.FIXED_PIPS = getenv_float("FIXED_PIPS", 100.0)
+        self.TP_MULT = getenv_float("TP_MULT", 2.0)
+
+        # ATR config
+        self.ATR_TF = os.environ.get("ATR_TF", "M5")
+        self.ATR_PERIOD = getenv_int("ATR_PERIOD", 14)
+        self.ATR_BARS = getenv_int("ATR_BARS", 300)
+        self.ATR_MULT_SL = getenv_float("ATR_MULT_SL", 1.0)
+        self.ATR_MULT_TP = getenv_float("ATR_MULT_TP", 2.0)
+        self.ATR_MIN_PIPS = getenv_float("ATR_MIN_PIPS", 0.0)
+
+        # Symbols & mapping
+        self._canonical_to_broker: Dict[str,str] = {}
+        self._broker_to_canon: Dict[str,str] = {}
+        self._symbols: List[str] = []
+
+        # Guard state
+        self._next_allowed: Dict[str, float] = {}
+        self._inflight_until: Dict[str, float] = {}
+
+        print("[controller] ready (paused). Use GUI ▶ RESUME to start.")
+
+    # ---- controls ----
+    def resume(self): self._running = True; print("[controller] ▶ RESUME")
+    def pause(self): self._running = False; print("[controller] ⏸ PAUSE")
+    def set_autopause(self, v: bool): self._autopause = bool(v); print(f"[controller] autopause → {self._autopause}")
+    def shutdown(self): self._stop = True; print("[controller] shutdown requested")
+
+    # MIN_CONF hooks for slider
+    def set_min_conf(self, v: float): self.MIN_CONF = max(0.0, min(1.0, float(v)))
+    def get_min_conf(self) -> float: return float(self.MIN_CONF)
+    def set_param(self, name: str, value):
+        if name == "MIN_CONF": self.set_min_conf(float(value))
+    def get_param(self, name: str):
+        if name == "MIN_CONF": return self.get_min_conf()
+        return None
+
+    # ---- status for GUI ----
+    def get_status(self) -> Dict[str, Any]:
+        ftmo_text = "N/A"
+        try:
+            if self.ftmo:
+                ftmo_text = self.ftmo.status_text()
+        except Exception: pass
+
+        open_count = 0
+        try:
+            if MT5:
+                pos = MT5.positions_get()
+                open_count = len(pos) if pos else 0
+        except Exception: pass
+
+        # Cooldown summary
+        now = time.time()
+        cd_secs = [max(0.0, ts - now) for ts in self._next_allowed.values()]
+        cd_secs = [x for x in cd_secs if x >= 0.5]
+        soonest = min(cd_secs) if cd_secs else 0.0
+
+        # Symbol rows
+        sym_rows = []
+        for canon in self._symbols:
+            broker = self._canonical_to_broker.get(canon, canon)
+            last_px = None
+            try:
+                if MT5:
+                    t = MT5.symbol_info_tick(broker)
+                    if t:
+                        bid = getattr(t, "bid", None); ask = getattr(t, "ask", None)
+                        if bid is not None and ask is not None: last_px = (float(bid)+float(ask))/2.0
+                        elif bid is not None: last_px = float(bid)
+                        elif ask is not None: last_px = float(ask)
+            except Exception: last_px = None
+
+            sym_rows.append({"canonical": canon, "broker": broker, "state":"", "last_price": last_px, "conf": None, "action":"IDLE"})
+
+        hb_age = (time.time() - self._t0) if self._running else 0.0
+        return {
+            "running": self._running,
+            "heartbeat_age_sec": hb_age,
+            "ai_conf": self.MIN_CONF,
+            "open_positions": open_count,
+            "ftmo_one_liner": (ftmo_text + (f" | cd_min={soonest:0.0f}s" if soonest > 0 else "")),
+            "symbols": sym_rows,
+        }
+
+    # ---- loop ----
+    def run(self):
+        print("[controller] loop starting (waiting for ▶ RESUME)…")
+        while not self._stop:
+            time.sleep(0.25)
+            if not self._running: continue
+
+            now = time.time()
+            if now - self._last_hb_print > 5.0:
+                self._last_hb_print = now
+                s_sltp = (f"FIXED({self.FIXED_PIPS:0.1f}p,{self.TP_MULT:0.2f}x)"
+                          if self.SLTP_MODE != "ATR" else
+                          f"ATR({self.ATR_TF},P{self.ATR_PERIOD},x{self.ATR_MULT_SL:0.2f}/{self.ATR_MULT_TP:0.2f})")
+                s_size = (f"FIXED_LOT({self.LOT_SIZE:0.2f})" if self.SIZING_MODE != "ATR_RISK"
+                          else f"ATR_RISK({self._risk_pct_for_banner():0.2f}%)")
+                print(f"[hb] running MIN_CONF={self.MIN_CONF:0.2f}  cooldown={self.ENTRY_COOLDOWN_SEC:0.0f}s inflight={self.INFLIGHT_SEC:0.1f}s  SLTP={s_sltp}  SIZE={s_size}")
+
+            # FTMO autopause
+            try:
+                if self.ftmo and getattr(self.ftmo, "violated", False):
+                    self._running = False
+                    print("[ftmo] violation => autopause")
+            except Exception:
+                pass
+            # strategy loop placeholder
+
+    def _risk_pct_for_banner(self) -> float:
+        """If we have mixed overrides, keep the banner on global RISK_PCT to avoid confusion."""
+        return float(self.RISK_PCT)
+
+    # ---- setup ----
+    def attach_symbols(self, canonical: List[str], mapping_overrides: Dict[str,str]):
+        self._symbols = list(canonical)
+        self._canonical_to_broker.clear()
+        self._broker_to_canon.clear()
+        for c in self._symbols:
+            b = mapping_overrides.get(c)
+            if not b: b = c + "USD" if not c.endswith("USD") else c
+            self._canonical_to_broker[c] = b
+            self._broker_to_canon[b] = c
+            self._next_allowed[b] = 0.0
+            self._inflight_until[b] = 0.0
+
+    def mt5_select_all(self):
+        if not MT5: return
+        try:
+            for b in self._canonical_to_broker.values():
+                MT5.symbol_select(b, True)
+        except Exception: pass
+
+    # ---- guards ----
+    def _guard_check(self, symbol: str) -> Tuple[bool, str, float]:
+        now = time.time()
+        if now < self._inflight_until.get(symbol, 0.0):
+            return False, "INFLIGHT", self._inflight_until[symbol] - now
+        if now < self._next_allowed.get(symbol, 0.0):
+            return False, "COOLDOWN", self._next_allowed[symbol] - now
+        return True, "", 0.0
+
+    def _guard_mark_after_attempt(self, symbol: str):
+        self._inflight_until[symbol] = time.time() + max(0.0, float(self.INFLIGHT_SEC))
+
+    def _guard_mark_after_order(self, symbol: str):
+        self._next_allowed[symbol] = time.time() + max(0.0, float(self.ENTRY_COOLDOWN_SEC))
+
+    # ---- price/point ----
+    def _symbol_point(self, symbol: str) -> float:
+        try:
+            info = MT5.symbol_info(symbol) if MT5 else None
+            if info and getattr(info, "point", 0.0) > 0:
+                return float(info.point)
+        except Exception: pass
+        return 0.01
+
+    # ---- SL/TP calculators ----
+    def _compute_sltp_fixed(self, side: str, entry_price: float, symbol: str) -> Tuple[Optional[float], Optional[float]]:
+        p = self._symbol_point(symbol)
+        sl_dist = max(0.0, float(self.FIXED_PIPS)) * p
+        tp_dist = sl_dist * max(0.0, float(self.TP_MULT))
+        if side.upper() == "BUY": sl = entry_price - sl_dist; tp = entry_price + tp_dist
+        else:                      sl = entry_price + sl_dist; tp = entry_price - tp_dist
+        return (round(sl, 5), round(tp, 5))
+
+    def _compute_sltp_atr(self, side: str, entry_price: float, symbol: str) -> Tuple[Optional[float], Optional[float]]:
+        if not ATR_HELPER: return None, None
+        try:
+            atr_value, _ = ATR_HELPER(symbol, period=int(self.ATR_PERIOD), timeframe=self.ATR_TF, bars=int(self.ATR_BARS))
+        except Exception:
+            atr_value = None
+        if not atr_value or atr_value <= 0: return None, None
+        sl_dist = float(self.ATR_MULT_SL) * float(atr_value)
+        tp_dist = float(self.ATR_MULT_TP) * float(atr_value)
+        if self.ATR_MIN_PIPS and self.ATR_MIN_PIPS > 0:
+            p = self._symbol_point(symbol)
+            min_dist = float(self.ATR_MIN_PIPS) * p
+            if sl_dist < min_dist: sl_dist = min_dist
+            if tp_dist < min_dist: tp_dist = min_dist
+        if side.upper() == "BUY": sl = entry_price - sl_dist; tp = entry_price + tp_dist
+        else:                      sl = entry_price + sl_dist; tp = entry_price - tp_dist
+        return (round(sl, 5), round(tp, 5))
+
+    def _compute_sltp(self, side: str, entry_price: float, symbol: str) -> Tuple[Optional[float], Optional[float]]:
+        if self.SLTP_MODE == "ATR":
+            sl, tp = self._compute_sltp_atr(side, entry_price, symbol)
+            if sl is not None and tp is not None:
+                return sl, tp
+        return self._compute_sltp_fixed(side, entry_price, symbol)
+
+    # ---- per-symbol override helpers ----
+    def _canon_for_broker(self, broker_symbol: str) -> Optional[str]:
+        return self._broker_to_canon.get(broker_symbol)
+
+    def _override_or(self, canon: Optional[str], base: float, prefix: str) -> float:
+        """Read env override like RISK_PCT_XAUUSD; fall back to base if not set/invalid."""
+        if not canon:
+            return base
+        key = f"{prefix}_{canon}"
+        v = os.environ.get(key)
+        if v is None:
+            return base
+        try:
+            return float(v)
+        except Exception:
+            return base
+
+    # ---- sizing helpers ----
+    def _stop_distance_for_sizing(self, side: str, entry_price: float, symbol: str) -> Optional[float]:
+        """Return SL distance in price units to feed the sizer."""
+        if self.SLTP_MODE == "ATR" and ATR_HELPER:
+            try:
+                atr_value, _ = ATR_HELPER(symbol, period=int(self.ATR_PERIOD), timeframe=self.ATR_TF, bars=int(self.ATR_BARS))
+                if atr_value and atr_value > 0:
+                    return float(self.ATR_MULT_SL) * float(atr_value)
+            except Exception:
+                pass
+        # fallback: fixed pips converted to price units
+        p = self._symbol_point(symbol)
+        return max(0.0, float(self.FIXED_PIPS)) * p
+
+    def _compute_volume(self, requested_volume: float, side: str, entry_price: float, symbol: str) -> Tuple[float, dict]:
+        """Return (volume_lots, diag). Overrides requested_volume when ATR_RISK is active."""
+        canon = self._canon_for_broker(symbol)
+
+        if self.SIZING_MODE != "ATR_RISK" or not POS_SIZER:
+            # fixed lot (respect requested if >0 else LOT_SIZE)
+            vol = float(requested_volume) if requested_volume and requested_volume > 0 else float(self.LOT_SIZE)
+            return vol, {"mode":"fixed_lot", "lot": vol}
+
+        # ATR_RISK with per-symbol overrides
+        stop_dist = self._stop_distance_for_sizing(side, entry_price, symbol)
+        if not stop_dist or stop_dist <= 0:
+            vol = float(self.LOT_SIZE)
+            return vol, {"mode":"atr_risk", "reason":"bad_stop_distance_fallback", "lot": vol}
+
+        # Base/global
+        risk_pct = float(self.RISK_PCT)
+        size_min = float(self.SIZE_MIN) if self.SIZE_MIN else 0.0
+        size_max = float(self.SIZE_MAX) if self.SIZE_MAX else 0.0
+
+        # Per-symbol overrides (by canonical)
+        risk_pct = self._override_or(canon, risk_pct, "RISK_PCT")
+        o_min = self._override_or(canon, size_min, "SIZE_MIN")
+        o_max = self._override_or(canon, size_max, "SIZE_MAX")
+        size_min, size_max = o_min, o_max
+
+        try:
+            lots, diag = POS_SIZER(symbol, stop_distance=stop_dist, risk_pct=risk_pct, default_lot=float(self.LOT_SIZE))
+        except Exception as e:
+            lots, diag = float(self.LOT_SIZE), {"mode":"atr_risk", "reason": f"sizer_exc:{e}"}
+
+        # optional clamp
+        unclamped = float(lots)
+        if size_min and lots < size_min: lots = size_min
+        if size_max and lots > size_max: lots = size_max
+
+        diag.update({
+            "mode":"atr_risk",
+            "stop_distance": stop_dist,
+            "risk_pct": risk_pct,
+            "lots_raw": unclamped,
+            "lots_final": float(lots),
+            "size_min": size_min or None,
+            "size_max": size_max or None,
+            "canon": canon
+        })
+        return float(lots), diag
+
+    # ---- order path ----
+    def order_market(self, symbol: str, side: str, volume: float, reason: str = "entry") -> Tuple[bool, Any]:
+        do_exec = getenv_bool("EXECUTE", False)
+        price = None
+        ticket = None
+
+        # Guards
+        ok_guard, why, rem = self._guard_check(symbol)
+        if not ok_guard:
+            self.exec_logger.log_event(symbol=symbol, side=side, volume=volume, price="",
+                                       retcode=why, comment=f"blocked by {why.lower()} ({rem:0.1f}s)", ticket="",
+                                       reason=reason, extra={})
+            return False, {"error": f"blocked: {why}", "remaining_sec": rem}
+
+        # Price snapshot
+        try:
+            if MT5:
+                tick = MT5.symbol_info_tick(symbol)
+                price = (tick.ask if side.upper()=="BUY" else tick.bid) if tick else None
+        except Exception:
+            price = None
+
+        # Sizing (may override requested volume)
+        eff_vol, size_diag = self._compute_volume(volume, side, price or 0.0, symbol)
+
+        # Mark in-flight and log attempt
+        self._guard_mark_after_attempt(symbol)
+        self.exec_logger.log_event(symbol=symbol, side=side, volume=eff_vol, price=price or "",
+                                   retcode="ATTEMPT", comment=f"attempt {reason}", ticket="",
+                                   reason=reason, extra={"execute": do_exec, "sltp_mode": self.SLTP_MODE, "sizing": self.SIZING_MODE, "size_diag": size_diag})
+
+        if not do_exec:
+            self._guard_mark_after_order(symbol)
+            self.exec_logger.log_event(symbol=symbol, side=side, volume=eff_vol, price=price or "",
+                                       retcode="SIM", comment="simulate only (EXECUTE=0)", ticket="",
+                                       reason=reason, extra={})
+            return True, {"simulated": True, "volume": eff_vol}
+
+        if not self.adapter:
+            self.exec_logger.log_event(symbol=symbol, side=side, volume=eff_vol, price=price or "",
+                                       retcode="NOADAPTER", comment="adapter missing", ticket="",
+                                       reason=reason, extra={})
+            return False, {"error":"adapter missing"}
+
+        # Real execution
+        try:
+            res = self.adapter.order_market(symbol, side.upper(), eff_vol)
+            retcode = res.get("retcode") if isinstance(res, dict) else None
+            comment = res.get("comment") if isinstance(res, dict) else ""
+            ticket = res.get("ticket") if isinstance(res, dict) else None
+            ok = (bool(res.get("ok", False)) if isinstance(res, dict) else bool(res)) or _retcode_ok(retcode, comment)
+
+            self._guard_mark_after_order(symbol)
+            self.exec_logger.log_event(symbol=symbol, side=side, volume=eff_vol, price=price or "",
+                                       retcode=retcode if retcode is not None else ("OK" if ok else "FAIL"),
+                                       comment=comment, ticket=ticket or "",
+                                       reason=reason, extra={"adapter": res, "size_diag": size_diag})
+
+            if ok:
+                self._apply_sltp(ticket=(int(ticket) if ticket is not None else None),
+                                 symbol=symbol, side=side, entry_price=price)
+            return ok, {"retcode": retcode, "comment": comment, "ticket": ticket, "volume": eff_vol}
+        except Exception as e:
+            self.exec_logger.log_event(symbol=symbol, side=side, volume=eff_vol, price=price or "",
+                                       retcode="EXC", comment=str(e), ticket="",
+                                       reason=reason, extra={"trace": traceback.format_exc(), "size_diag": size_diag})
+            return False, {"error": str(e)}
+
+    # ---- SL/TP apply ----
+    def _find_position(self, symbol: str, ticket: Optional[int]):
+        if not MT5: return None
+        try:
+            pos_list = MT5.positions_get(symbol=symbol)
+            if not pos_list: return None
+            if ticket is not None:
+                for p in pos_list:
+                    try:
+                        if int(p.ticket) == int(ticket): return p
+                    except Exception: pass
+            try: return max(pos_list, key=lambda p: getattr(p, "time_msc", 0))
+            except Exception: return pos_list[0]
+        except Exception: return None
+
+    def _apply_sltp(self, ticket: Optional[int], symbol: str, side: str, entry_price: Optional[float]) -> None:
+        if not MT5: return
+        the_pos = self._find_position(symbol, ticket)
+        if not the_pos: return
+        base_price = float(entry_price) if entry_price else float(getattr(the_pos, "price_open", 0.0))
+        if base_price <= 0: return
+        sl, tp = self._compute_sltp(side, base_price, symbol)
+        if sl is None or tp is None: return
+        try:
+            req = {"action": MT5.TRADE_ACTION_SLTP, "position": int(the_pos.ticket), "symbol": symbol,
+                   "sl": sl, "tp": tp, "magic": 777123, "comment": f"set_sltp_{self.SLTP_MODE.lower()}"}
+            res = MT5.order_send(req)
+            ret = getattr(res, "retcode", None)
+            ok = (ret == MT5.TRADE_RETCODE_DONE)
+            self.exec_logger.log_event(symbol=symbol, side=side, volume=getattr(the_pos,"volume",""),
+                                       price=base_price, retcode=(ret if ret is not None else ("OK" if ok else "FAIL")),
+                                       comment=(f"SLTP set {self.SLTP_MODE} " +
+                                                (f"[{self.ATR_TF} P{self.ATR_PERIOD} x{self.ATR_MULT_SL}/{self.ATR_MULT_TP}]"
+                                                 if self.SLTP_MODE=="ATR" else f"[{self.FIXED_PIPS}p x{self.TP_MULT}]")),
+                                       ticket=int(the_pos.ticket), reason="sltp", extra={"sl":sl,"tp":tp})
+        except Exception as e:
+            self.exec_logger.log_event(symbol=symbol, side=side, volume=getattr(the_pos,"volume",""),
+                                       price=base_price, retcode="EXC",
+                                       comment=f"SLTP set failed: {e}", ticket=int(getattr(the_pos,"ticket",0)),
+                                       reason="sltp", extra={"trace": traceback.format_exc()})
+
+# ------------- dashboard attach -------------
+def start_dashboard_async(controller: TradingController):
+    if not MiniDashboard:
+        print("[ui] dashboard not available; running headless"); return
+    def _run():
+        try:
+            ui = MiniDashboard(controller)
+            ui.run()
+        except Exception as e:
+            print(f"[ui] dashboard error: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+    print("[ui] dashboard thread started")
+
+# ------------- broker/ftmo setup -------------
+def setup_broker_and_ftmo():
+    adapter = None; ftmo_guard = None
+    if Adapter:
+        try:
+            adapter = Adapter()
+            login  = os.environ.get("MT5_LOGIN")
+            pwd    = os.environ.get("MT5_PASSWORD")
+            server = os.environ.get("MT5_SERVER")
+            ok, msg = adapter.connect(login, pwd, server)
+            print(f"[adapter] connect(l,*,s) -> ok={ok} message={msg}")
+        except Exception as e:
+            print(f"[adapter] connect failed: {e}")
+    if FTMO:
+        try:
+            daily_loss_limit = getenv_float("FTMO_DAILY_LOSS", -5000.0)
+            max_dd_limit     = getenv_float("FTMO_MAX_DD", -10000.0)
+            state_path_str   = os.environ.get("FTMO_STATE", str(Path("data") / "ftmo_state.json"))
+            state_path = Path(state_path_str); state_path.parent.mkdir(parents=True, exist_ok=True)
+            ftmo_guard = FTMO(daily_loss_limit, max_dd_limit, str(state_path))
+            print(f"[ftmo] enforcer ready (daily_loss={daily_loss_limit}, max_dd={max_dd_limit}, state={state_path})")
+        except Exception as e:
+            print(f"[ftmo] disabled: {e}")
+            ftmo_guard = None
+    if MT5:
+        try:
+            info = MT5.terminal_info()
+            if info is None:
+                term = os.environ.get("MT5_TERMINAL_PATH") or os.environ.get("TERMINAL_PATH")
+                kw = {}
+                if term: kw["path"] = term
+                login  = os.environ.get("MT5_LOGIN")
+                pwd    = os.environ.get("MT5_PASSWORD")
+                server = os.environ.get("MT5_SERVER")
+                ok = MT5.initialize(login=int(login), password=pwd, server=server, **kw) if (login and pwd and server) else MT5.initialize(**kw)
+                print(f"[mt5] initialize -> {ok}")
+        except Exception as e:
+            print(f"[mt5] init failed: {e}")
+    return adapter, ftmo_guard
+
+# ------------- main -------------
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-ui", action="store_true")
+    parser.add_argument("--no-log", action="store_true")
+    args = parser.parse_args()
+
+    app_mode = os.environ.get("APP_MODE") or ""
+    profile = os.environ.get("PROFILE") or "default"
+    symbols_env = os.environ.get("SYMBOLS") or "XAUUSD,US30USD,NAS100USD,SPX500USD,BTCUSD,WTICOUSD"
+    canonical_symbols = parse_symbols(symbols_env)
+    mapping_overrides = {k[4:]: v for k, v in os.environ.items() if k.startswith("MAP_") and v}
+
+    print("[OK] Settings loaded")
+    print(f"  mode={app_mode or 'live'}  log={'OFF' if args.no_log or not getenv_bool('LOG_EXEC', True) else 'ON'}  server={os.environ.get('MT5_SERVER') or 'n/a'}")
+    print(f"  Symbols: {', '.join(canonical_symbols)}")
+
+    adapter, ftmo_guard = setup_broker_and_ftmo()
+    exec_logger = ExecLogger(profile=profile, enabled=(not args.no_log and getenv_bool("LOG_EXEC", True)))
+
+    controller = TradingController(profile=profile, adapter=adapter, ftmo_guard=ftmo_guard,
+                                   exec_logger=exec_logger, args=args)
+
+    controller.attach_symbols(canonical_symbols, mapping_overrides)
+    controller.mt5_select_all()
+
+    if not args.no_ui:
+        start_dashboard_async(controller)
+
+    try:
+        controller.pause()
+        controller.run()
+    except KeyboardInterrupt:
+        print("\n[shutdown] Ctrl-C")
+    except Exception as e:
+        print(f"[fatal] {e}\n{traceback.format_exc()}")
+    finally:
+        try: controller.shutdown()
+        except Exception: pass
+        print("[bye] run_live exiting")
+
+if __name__ == "__main__":
+    main()
+# ===== [PATCH] sizing_mode hooks (safe, idempotent) =====
+def _ex_bind_sizing_hooks(ctrl):
+    """
+    Binds ctrl.set_sizing_mode(mode) and ctrl.get_sizing_mode().
+    - Accepts FIXED_LOT or ATR_RISK (case-insensitive).
+    - Updates both ctrl._sizing_mode and ctrl.SIZING_MODE (for legacy reads).
+    - Returns True if applied or already present.
+    """
+    # If already present, do nothing.
+    if hasattr(ctrl, "set_sizing_mode") and hasattr(ctrl, "get_sizing_mode"):
+        return True
+
+    # Initialize internal mirror from any existing attribute; default FIXED_LOT.
+    try:
+        cur = str(getattr(ctrl, "SIZING_MODE", "FIXED_LOT")).upper()
+    except Exception:
+        cur = "FIXED_LOT"
+    if cur not in ("FIXED_LOT", "ATR_RISK"):
+        cur = "FIXED_LOT"
+    setattr(ctrl, "_sizing_mode", cur)
+
+    def _set(mode):
+        m = str(mode).upper()
+        if m not in ("FIXED_LOT", "ATR_RISK"):
+            return False
+        # Update both the internal mirror and the legacy attribute.
+        try: setattr(ctrl, "_sizing_mode", m)
+        except Exception: pass
+        try: setattr(ctrl, "SIZING_MODE", m)
+        except Exception: pass
+        # Optional: friendly console line
+        try:
+            print(f"[controller] SIZING_MODE -> {m}")
+        except Exception:
+            pass
+        return True
+
+    def _get():
+        try:
+            return getattr(ctrl, "_sizing_mode")
+        except Exception:
+            return str(getattr(ctrl, "SIZING_MODE", "FIXED_LOT")).upper()
+
+    # Bind as instance methods
+    try:
+        import types
+        ctrl.set_sizing_mode = types.MethodType(lambda self, mode: _set(mode), ctrl)
+        ctrl.get_sizing_mode = types.MethodType(lambda self: _get(), ctrl)
+    except Exception:
+        # Fallback: simple attributes (callable-like)
+        ctrl.set_sizing_mode = _set
+        ctrl.get_sizing_mode = _get
+    return True
+# ===== /[PATCH] =====

@@ -1,0 +1,11 @@
+# FTMO-style daily hard caps. All amounts are in account currency (e.g., USD).
+# If both realized and unrealized are true, we cap on (realized + unrealized).
+enabled: true
+timezone: "UTC"          # compute "today" in this TZ (UTC recommended)
+daily_loss_cap: -1000.0  # block new orders if today's PnL <= this
+daily_profit_cap: 999999 # optional take-profit cap (block new orders above this PnL); set big to disable
+use_realized: true
+use_unrealized: true
+# Optional: reset time (HH:MM 24h). If empty, day boundary per timezone midnight.
+reset_time: ""
+reason_prefix: "LIMIT"

@@ -1,0 +1,7 @@
+name: Conservative
+overrides:
+  time_windows:
+    allowed:
+      XAUUSD:  ["08:00-17:00"]
+  daily_limits:
+    daily_loss_cap: -600

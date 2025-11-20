@@ -1,0 +1,7 @@
+value_per_point:
+  XAUUSD: 1.0
+  US30USD: 1.0
+  NAS100USD: 1.0
+  EURUSD: 10.0
+  GBPUSD: 10.0
+  SPX500USD: 1.0

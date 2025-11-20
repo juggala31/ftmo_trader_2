@@ -1,0 +1,8 @@
+{
+  "BTCX25.sim":  ["LONDON", "NY", "OFF"],
+  "US100Z25.sim": ["ASIA", "LONDON", "NY", "OFF"],
+  "US30Z25.sim":  ["LONDON", "NY", "OFF"],
+  "US500Z25.sim": ["ASIA", "LONDON", "NY", "OFF"],
+  "USOILZ25.sim": ["LONDON", "NY"],
+  "XAUZ25.sim":   ["ASIA", "LONDON", "NY"]
+}

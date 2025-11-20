@@ -1,0 +1,6 @@
+# Symbols mapped to correlation groups.
+# Any open positions sharing the same group count toward the correlated-exposure cap.
+map:
+  XAUUSD: GOLD
+  US30USD: US_INDICES
+  NAS100USD: US_INDICES

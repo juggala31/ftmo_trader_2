@@ -1,0 +1,16 @@
+# Risk guard configuration
+spread_limits_points:
+  XAUUSD: 50        # example: 50 "points" per your point-size config
+  US30USD: 30
+  NAS100USD: 30
+  SPX500USD: 30
+  BTCUSD: 200
+  WTICOUSD: 40
+
+# caps (0 = no cap)
+max_open:
+  per_symbol: 2
+  global: 4
+
+# message shown when blocked
+reason_prefix: "GUARD"

@@ -1,0 +1,7 @@
+# Volatility sanity guard
+adr_days: 14                 # lookback days for ADR
+adr_max_multiple: 1.8        # if today's range > 1.8 * ADR => block
+atr_tf: M15                  # ATR timeframe for live check
+atr_period: 14               # ATR period
+atr_max_multiple: 2.5        # if ATR_points > 2.5 * ADR_points => block
+cooldown_minutes_on_violation: 15  # optional: future use (UI badge, etc.)

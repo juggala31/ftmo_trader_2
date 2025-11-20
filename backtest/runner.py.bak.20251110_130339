@@ -1,0 +1,157 @@
+#!/usr/bin/env python
+"""
+Backtest runner:
+- Loads OHLC CSV: columns [time,open,high,low,close]
+- Computes ATR
+- Selects signal provider: demo (EMA/RSI) or live adapter (ai/alpha_loop)
+- Simulates entries with SimExec (ATR_RISK/FIXED_LOT + ATR or FIXED SL/TP)
+- Writes trades CSV + prints metrics (PF, WR, DD, Expectancy)
+"""
+import csv, os, sys
+from pathlib import Path
+from statistics import mean
+
+ROOT     = Path(r"C:\ftmo_trader_2")
+BT       = ROOT / "backtest"
+STRATDIR = ROOT / "strategy"
+REPORTS  = ROOT / "reports"
+REPORTS.mkdir(parents=True, exist_ok=True)
+
+# Import sim_exec (plain module on sys.path)
+sys.path.insert(0, str(BT))
+from sim_exec import SimConfig, SimState, enter_if_allowed, update_positions, flatten_all
+
+def load_csv(path):
+    rows = []
+    with open(path, "r", encoding="utf-8-sig") as f:
+        r = csv.DictReader(f)
+        cols = {c.lower().strip(): c for c in r.fieldnames}
+        for row in r:
+            rows.append({
+                "time":  row[cols.get("time","time")],
+                "open":  float(row[cols.get("open","open")]),
+                "high":  float(row[cols.get("high","high")]),
+                "low":   float(row[cols.get("low","low")]),
+                "close": float(row[cols.get("close","close")]),
+            })
+    return rows
+
+def compute_atr(rows, period=14):
+    atr = [None]*len(rows)
+    prev_close = None
+    trN = None
+    for i, row in enumerate(rows):
+        h,l,c = row["high"], row["low"], row["close"]
+        tr = max(h-l, abs(h-(prev_close if prev_close is not None else h)), abs(l-(prev_close if prev_close is not None else l)))
+        prev_close = c
+        if trN is None:
+            trN = tr
+            atr[i] = None
+        else:
+            k = 2.0/(period+1)
+            trN = trN + k*(tr - trN)
+            atr[i] = trN
+    return atr
+
+def save_trades_csv(symbol, path_out, positions):
+    with open(path_out, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["symbol","side","entry","exit","size","opened_at","closed_at","pnl"])
+        for p in positions:
+            if p.closed_at is None:  # skip open
+                continue
+            w.writerow([symbol, p.side, f"{p.entry:.5f}", f"{p.exit:.5f}", f"{p.size:.4f}", p.opened_at, p.closed_at, f"{p.pnl:.2f}"])
+    return path_out
+
+def metrics(positions):
+    closed = [p for p in positions if p.closed_at is not None]
+    if not closed:
+        return {"trades":0,"pf":0.0,"wr":0.0,"avg_win":0.0,"avg_loss":0.0,"exp":0.0,"dd":0.0}
+    wins   = [p for p in closed if p.pnl >= 0]
+    losses = [p for p in closed if p.pnl < 0]
+    sum_win  = sum(p.pnl for p in wins)   or 0.0
+    sum_loss = -sum(p.pnl for p in losses) or 0.0
+    pf  = (sum_win / sum_loss) if sum_loss > 1e-9 else (float("inf") if sum_win>0 else 0.0)
+    wr  = 100.0 * len(wins) / len(closed)
+    avg_win  = mean([p.pnl for p in wins]) if wins else 0.0
+    avg_loss = mean([-p.pnl for p in losses]) if losses else 0.0
+    exp = (wr/100.0)*avg_win - ((100.0-wr)/100.0)*avg_loss
+    # Simple running equity DD
+    eq = 0.0; peak = 0.0; dd = 0.0
+    for p in closed:
+        eq += p.pnl
+        if eq > peak: peak = eq
+        if eq - peak < dd: dd = eq - peak
+    return {"trades":len(closed),"pf":pf,"wr":wr,"avg_win":avg_win,"avg_loss":avg_loss,"exp":exp,"dd":dd}
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="Backtest runner (CSV OHLC)")
+    ap.add_argument("--csv", required=True, help="Path to OHLC CSV with columns: time,open,high,low,close")
+    ap.add_argument("--symbol", required=True)
+    ap.add_argument("--signal", choices=["demo","live"], default=os.getenv("BT_SIGNAL","demo"),
+                    help="Use demo EMA/RSI or live ai.alpha_loop adapter")
+    ap.add_argument("--cooldown-bars", type=int, default=12, help="Bars between entries (phase/cooldown analog)")
+    ap.add_argument("--min-conf", type=float, default=float(os.getenv("MIN_CONF","0.01")))
+    ap.add_argument("--max-positions", type=int, default=int(os.getenv("MAX_POSITIONS","3")))
+    ap.add_argument("--sizing", choices=["ATR_RISK","FIXED_LOT"], default=os.getenv("POSITION_SIZING","ATR_RISK"))
+    ap.add_argument("--fixed-lot", type=float, default=float(os.getenv("LOT_SIZE","0.10")))
+    ap.add_argument("--atr-risk-pct", type=float, default=float(os.getenv("ATR_RISK_PCT","0.50")))
+    ap.add_argument("--atr-period", type=int, default=14)
+    ap.add_argument("--sl-atr-mult", type=float, default=1.00)
+    ap.add_argument("--tp-atr-mult", type=float, default=2.00)
+    ap.add_argument("--use-fixed-sltp", action="store_true", help="Use fixed points instead of ATR SL/TP")
+    ap.add_argument("--fixed-sl-points", type=float, default=100.0)
+    ap.add_argument("--fixed-tp-mult", type=float, default=2.0)
+    ap.add_argument("--out", default=str(REPORTS / "backtest_trades.csv"))
+    args = ap.parse_args()
+
+    # Choose signal provider
+    sys.path.insert(0, str(STRATDIR))
+    if args.signal == "live":
+        from signal_entry_live import get_signal as _get_signal
+        print("[bt] signal=LIVE (ai.alpha_loop adapter)")
+    else:
+        from signal_entry import get_signal as _get_signal
+        print("[bt] signal=DEMO (EMA/RSI)")
+
+    rows = load_csv(args.csv)
+    atr  = compute_atr(rows, period=args.atr_period)
+
+    cfg = SimConfig(
+        symbol=args.symbol,
+        min_conf=args.min_conf,
+        cooldown_bars=args.cooldown_bars,
+        max_positions=args.max_positions,
+        sizing_mode=args.sizing,
+        fixed_lot=args.fixed_lot,
+        atr_risk_pct=args.atr_risk_pct,
+        atr_period=args.atr_period,
+        sl_atr_mult=args.sl_atr_mult,
+        tp_atr_mult=args.tp_atr_mult,
+        use_fixed_sltp=args.use_fixed_sltp,
+        fixed_sl_points=args.fixed_sl_points,
+        fixed_tp_mult=args.fixed_tp_mult,
+    )
+    st  = SimState()
+    sst = {}  # per-symbol persistent state for the signal
+
+    for i, row in enumerate(rows):
+        update_positions(st, row["high"], row["low"], row["close"], i)
+        a = atr[i]
+        if a is None:
+            continue
+        side, conf = _get_signal(row, sst)
+        if side:
+            enter_if_allowed(cfg, st, side, conf, i, row["close"], a)
+
+    if rows:
+        flatten_all(st, rows[-1]["close"], len(rows)-1)
+
+    out = save_trades_csv(args.symbol, args.out, st.open_positions)
+    m = metrics(st.open_positions)
+    print(f"[bt] saved trades -> {out}")
+    print("[bt] metrics:", f"trades={m['trades']}  PF={m['pf']:.2f}  WR={m['wr']:.2f}%  EXP={m['exp']:.2f}  DD={m['dd']:.2f}")
+
+if __name__ == "__main__":
+    main()

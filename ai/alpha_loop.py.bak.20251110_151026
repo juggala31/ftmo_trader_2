@@ -1,0 +1,369 @@
+# -*- coding: utf-8 -*-
+"""
+alpha_loop.py — minimal, clean AI loop for FTMO Trader 2.0
+- AI_SYMBOLS env override
+- EMA/RSI signal + confidence
+- DRY_RUN_AI support
+- CSV + SQLite logging
+- Backtest hooks: decide_from_close, get_signal
+- One-shot [ai/force] helper
+All indentation uses 4 spaces.
+"""
+
+import os
+import time
+import csv
+import datetime
+import threading
+
+try:
+    import sqlite3
+except Exception:
+    sqlite3 = None
+
+try:
+    import MetaTrader5 as mt5
+except Exception:
+    mt5 = None
+
+TF_MAP = {}
+if mt5:
+    TF_MAP = {
+        "M1":  mt5.TIMEFRAME_M1,
+        "M5":  mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "M30": mt5.TIMEFRAME_M30,
+        "H1":  mt5.TIMEFRAME_H1,
+        "H4":  mt5.TIMEFRAME_H4,
+    }
+
+def _ema(vals, period):
+    if period < 1 or len(vals) < period:
+        return None
+    k = 2.0 / (period + 1.0)
+    e = vals[0]
+    for v in vals[1:]:
+        e = v * k + e * (1 - k)
+    return e
+
+def _rsi(closes, period=14):
+    if len(closes) <= period:
+        return None
+    gains = 0.0
+    losses = 0.0
+    for i in range(1, period + 1):
+        ch = closes[-i] - closes[-i - 1]
+        if ch >= 0:
+            gains += ch
+        else:
+            losses += -ch
+    if gains == 0 and losses == 0:
+        return 50.0
+    rs = (gains / period) / ((losses / period) if losses > 0 else 1e-9)
+    return 100.0 - 100.0 / (1.0 + rs)
+
+def _bars(symbol, tf_name, n=300):
+    if not mt5:
+        return []
+    tf = TF_MAP.get(str(tf_name).upper(), TF_MAP.get("M1"))
+    if tf is None:
+        return []
+    try:
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, n)
+        if not rates:
+            return []
+        return [float(r.close) for r in rates]
+    except Exception:
+        return []
+
+def _csv_log_row(root_dir, row):
+    try:
+        path = os.path.join(root_dir, "logs", "ai_signals.csv")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        exists = os.path.exists(path)
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if not exists:
+                w.writerow(["ts_iso","symbol","tf","side","confidence","ema_fast","ema_slow","rsi","placed","vol","reason"])
+            w.writerow(row)
+    except Exception:
+        pass
+
+def _sqlite_open(root_dir):
+    if sqlite3 is None:
+        return None
+    try:
+        dbp = os.path.join(root_dir, "logs", "events.db")
+        os.makedirs(os.path.dirname(dbp), exist_ok=True)
+        conn = sqlite3.connect(dbp, timeout=3.0, isolation_level=None)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_signals(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_iso TEXT,
+            symbol TEXT,
+            tf TEXT,
+            side TEXT,
+            confidence REAL,
+            ema_fast REAL,
+            ema_slow REAL,
+            rsi REAL,
+            placed INTEGER DEFAULT 0,
+            vol REAL DEFAULT 0.0,
+            reason TEXT
+        );
+        """)
+        return conn
+    except Exception:
+        return None
+
+def _force_once_trade(ctrl):
+    """One-shot live placement for pipeline proof via env AI_FORCE_* variables."""
+    try:
+        sym  = (os.getenv("AI_FORCE_ONCE","") or "").strip()
+        side = (os.getenv("AI_FORCE_SIDE","BUY") or "BUY").strip().upper()
+        vol  = float(os.getenv("AI_FORCE_VOL","0.01") or "0.01")
+        if not sym:
+            return
+        if getattr(ctrl, "_ai_force_done", False):
+            return
+        ctrl._ai_force_done = True
+        try:
+            print(f"[ai/force] placing one-shot {side} {sym} vol={vol}")
+            ctrl.order_market(sym, side, vol, reason="AI/FORCE_ONCE")
+            print("[ai/force] order requested")
+        except Exception as e:
+            print("[ai/force] failed:", e)
+    except Exception as e:
+        print("[ai/force] error:", e)
+
+def start_ai_loop(ctrl):
+    """Start AI loop once."""
+    if getattr(ctrl, "_ai_loop_started", False):
+        return True
+    setattr(ctrl, "_ai_loop_started", True)
+
+    # ENV merge
+    ENV = {}
+    try:
+        if hasattr(ctrl, "ENV") and isinstance(ctrl.ENV, dict):
+            ENV.update(ctrl.ENV)
+    except Exception:
+        pass
+    for k, v in os.environ.items():
+        ENV.setdefault(k, v)
+
+    # knobs
+    min_secs = float(ENV.get("AI_MIN_SECS", "15"))
+    trade_gap = float(ENV.get("AI_TRADE_GAP_SECS", "60"))
+    default_min_conf = float(ENV.get("MIN_CONF", "0.10"))
+    dry_run = str(ENV.get("DRY_RUN_AI", "0")).lower() in ("1","true","yes","on")
+
+    last_decide = {}
+    last_trade  = {}
+
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    sqlite_conn = _sqlite_open(root_dir)
+
+    def _print_syms(tag, syms):
+        if not getattr(ctrl, "_ai_syms_printed", False):
+            try:
+                print(f"[ai] using symbols ({tag}): " + ",".join(syms))
+            except Exception:
+                pass
+            setattr(ctrl, "_ai_syms_printed", True)
+
+    def get_symbols():
+        # 1) ENV override
+        try:
+            _env_syms = os.getenv("AI_SYMBOLS","")
+            if _env_syms:
+                syms = [s.strip() for s in _env_syms.split(",") if s.strip()]
+                if syms:
+                    _print_syms("env", syms)
+                    return syms
+        except Exception:
+            pass
+        # 2) Controller rows
+        try:
+            st = ctrl.get_status() if hasattr(ctrl, "get_status") else {}
+            rows = st.get("rows") or st.get("symbols") or []
+            syms = [(r.get("broker") or r.get("symbol")) for r in rows if (r.get("broker") or r.get("symbol"))]
+            syms = [s for s in syms if s]
+            if syms:
+                _print_syms("controller", syms)
+                return syms
+        except Exception:
+            pass
+        # 3) fallback
+        syms = ["XAUUSD","US30","US100","SPX500","WTICOUSD","BTCUSD"]
+        _print_syms("fallback", syms)
+        return syms
+
+    def _signal_for_symbol(sym):
+        tf     = ENV.get(f"AI_TF_{sym}", ENV.get("AI_TF", "M1"))
+        bars_n = int(float(ENV.get("AI_BARS", "300")))
+        f      = int(float(ENV.get("EMA_FAST", "9")))
+        s      = int(float(ENV.get("EMA_SLOW", "21")))
+        rper   = int(float(ENV.get("RSI_PERIOD", "14")))
+
+        closes = _bars(sym, tf, bars_n)
+        if len(closes) < max(f, s, rper) + 2:
+            return None
+
+        ema_f = _ema(closes[-(max(f, s) + 50):], f)
+        ema_s = _ema(closes[-(max(f, s) + 50):], s)
+        rsi   = _rsi(closes, rper)
+        if ema_f is None or ema_s is None or rsi is None:
+            return None
+
+        sep = (ema_f - ema_s) / (abs(ema_s) if abs(ema_s) > 1e-9 else 1.0)
+        sep_score = max(0.0, min(1.0, abs(sep) * 5.0))
+        if ema_f > ema_s and 50.0 <= rsi <= 70.0:
+            side = "BUY"
+            rsi_score = max(0.0, min(1.0, (rsi - 50.0) / 20.0))
+            conf = 0.6 * sep_score + 0.4 * rsi_score
+        elif ema_f < ema_s and 30.0 <= rsi <= 50.0:
+            side = "SELL"
+            rsi_score = max(0.0, min(1.0, (50.0 - rsi) / 20.0))
+            conf = 0.6 * sep_score + 0.4 * rsi_score
+        else:
+            return {"side": "FLAT", "conf": 0.0, "tf": tf, "ema_fast": ema_f, "ema_slow": ema_s, "rsi": rsi}
+
+        return {"side": side, "conf": float(conf), "tf": tf,
+                "ema_fast": float(ema_f), "ema_slow": float(ema_s), "rsi": float(rsi)}
+
+    def _can_trade():
+        try:
+            st = ctrl.get_status() if hasattr(ctrl, "get_status") else {}
+            if not bool(st.get("running", False)):
+                return False
+        except Exception:
+            pass
+        try:
+            if hasattr(ctrl, "ftmo") and getattr(ctrl.ftmo, "violated", False):
+                return False
+        except Exception:
+            pass
+        try:
+            if not bool(getattr(ctrl, "EXECUTE", True)):
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _loop():
+        while True:
+            try:
+                _force_once_trade(ctrl)
+
+                syms = get_symbols()
+                for sym in syms:
+                    now = time.time()
+                    if now - last_decide.get(sym, 0.0) < min_secs:
+                        continue
+                    last_decide[sym] = now
+
+                    sig = _signal_for_symbol(sym)
+                    if not sig:
+                        ts = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                        _csv_log_row(root_dir, [ts, sym, "M1", "FLAT", 0.0, 0, 0, 0, 0, 0, "AI/EVAL"])
+                        continue
+
+                    ts = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                    placed = 0
+                    vol_used = 0.0
+                    reason = ""
+                    _csv_log_row(root_dir, [ts, sym, sig.get("tf",""), sig["side"], sig["conf"],
+                                             sig.get("ema_fast",""), sig.get("ema_slow",""), sig.get("rsi",""),
+                                             placed, vol_used, reason])
+
+                    if sig["side"] != "FLAT":
+                        try:
+                            min_conf = float(getattr(ctrl, "MIN_CONF", default_min_conf))
+                        except Exception:
+                            min_conf = default_min_conf
+                        if float(sig["conf"]) >= min_conf and _can_trade() and (now - last_trade.get(sym, 0.0) >= trade_gap):
+                            price = None
+                            if mt5:
+                                try:
+                                    tick = mt5.symbol_info_tick(sym)
+                                    if tick:
+                                        price = float(tick.ask if sig["side"] == "BUY" else tick.bid)
+                                except Exception:
+                                    pass
+                            if price is not None:
+                                req = 0.10
+                                try:
+                                    if hasattr(ctrl, "SIZING_MODE") and str(getattr(ctrl, "SIZING_MODE")).upper() == "ATR_RISK":
+                                        req = float(getattr(ctrl, "RISK_PCT", 0.50))
+                                    else:
+                                        req = float(getattr(ctrl, "LOT_SIZE", 0.10))
+                                except Exception:
+                                    pass
+
+                                lots = 0.0
+                                if hasattr(ctrl, "_compute_volume"):
+                                    try:
+                                        lots, _ = ctrl._compute_volume(req, sig["side"], price, sym)
+                                    except Exception:
+                                        lots = 0.0
+                                if lots > 0.0:
+                                    if dry_run:
+                                        print(f"[ai] {sym} {sig['side']} conf={sig['conf']:.2f} lots={lots:.2f} [DRY-RUN]")
+                                        last_trade[sym] = now
+                                    else:
+                                        ok, res = (False, "no controller.order_market")
+                                        if hasattr(ctrl, "order_market"):
+                                            ok, res = ctrl.order_market(sym, sig["side"], float(lots), reason="ai")
+                                        print(f"[ai] {sym} {sig['side']} conf={sig['conf']:.2f} lots={lots:.2f} ok={ok} -> {res}")
+                                        last_trade[sym] = now
+
+                time.sleep(1.0)
+            except Exception as e:
+                try:
+                    print(f"[ai] loop error: {e}")
+                except Exception:
+                    pass
+                time.sleep(1.0)
+
+    threading.Thread(target=_loop, name="ai_loop", daemon=True).start()
+    print("[ai] loop started")
+    return True
+
+# ---------------------------
+# Backtest hooks
+# ---------------------------
+
+def decide_from_close(c, state):
+    return None, 0.0
+
+def get_signal(row, state):
+    closes = state.get("_demo_closes", [])
+    closes.append(float(row["close"]))
+    if len(closes) > 2000:
+        closes = closes[-1000:]
+    state["_demo_closes"] = closes
+
+    f, s, rper = 9, 21, 14
+    if len(closes) < max(f, s, rper) + 2:
+        return None, 0.0
+
+    ema_f = _ema(closes[-(max(f, s) + 50):], f)
+    ema_s = _ema(closes[-(max(f, s) + 50):], s)
+    rsi   = _rsi(closes, rper)
+    if ema_f is None or ema_s is None or rsi is None:
+        return None, 0.0
+
+    sep = (ema_f - ema_s) / (abs(ema_s) if abs(ema_s) > 1e-9 else 1.0)
+    sep_score = max(0.0, min(1.0, abs(sep) * 5.0))
+    if ema_f > ema_s and 50.0 <= rsi <= 70.0:
+        side = "BUY"
+        rsi_score = max(0.0, min(1.0, (rsi - 50.0) / 20.0))
+        conf = 0.6 * sep_score + 0.4 * rsi_score
+        return side, float(conf)
+    elif ema_f < ema_s and 30.0 <= rsi <= 50.0:
+        side = "SELL"
+        rsi_score = max(0.0, min(1.0, (50.0 - rsi) / 20.0))
+        conf = 0.6 * sep_score + 0.4 * rsi_score
+        return side, float(conf)
+    return None, 0.0

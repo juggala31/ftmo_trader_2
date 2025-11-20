@@ -1,0 +1,13 @@
+groups:
+  indices:
+  - AUDJPY.sim
+  - CADJPY.sim
+  - NZDJPY.sim
+  - US100Z25.sim
+  - US30Z25.sim
+  - US500Z25.sim
+  - USDJPY.sim
+  crypto:
+  - BTCX25.sim
+  metals:
+  - XAUZ25.sim

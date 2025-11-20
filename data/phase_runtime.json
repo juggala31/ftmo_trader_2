@@ -1,0 +1,11 @@
+{
+  "phase_name": "Phase 1 \u2014 Data Collection",
+  "total_trades": 0,
+  "progress_pct": 0.0,
+  "trades_remaining": 75,
+  "wr_recent": 0.0,
+  "pf_recent": 0.0,
+  "min_conf": 0.01,
+  "cooldown_s": 60,
+  "max_positions": 5
+}

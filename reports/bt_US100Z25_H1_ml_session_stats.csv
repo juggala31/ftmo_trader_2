@@ -1,0 +1,10 @@
+group_type,symbol,session,trades,wins,losses,flats,wr_pct,pnl,avg_pnl,pf,max_dd
+overall,,,308,160,147,1,51.95,932.62,3.03,2.0002,-114.12
+session,,ASIA,26,17,9,0,65.38,164.16,6.31,3.9456,-27.90
+session,,LONDON,54,30,24,0,55.56,237.69,4.40,2.5263,-32.38
+session,,NY,170,85,85,0,50.00,380.68,2.24,1.7425,-95.72
+session,,OFF,58,28,29,1,48.28,150.09,2.59,1.7204,-99.03
+symbol_session,US100Z25.sim,ASIA,26,17,9,0,65.38,164.16,6.31,3.9456,-27.90
+symbol_session,US100Z25.sim,LONDON,54,30,24,0,55.56,237.69,4.40,2.5263,-32.38
+symbol_session,US100Z25.sim,NY,170,85,85,0,50.00,380.68,2.24,1.7425,-95.72
+symbol_session,US100Z25.sim,OFF,58,28,29,1,48.28,150.09,2.59,1.7204,-99.03

@@ -1,0 +1,347 @@
+def _force_once_trade(ctrl):
+    """
+    One-shot live placement for pipeline proof.
+    AI_FORCE_ONCE=<SYMBOL>, AI_FORCE_SIDE=BUY/SELL, AI_FORCE_VOL=0.01 (in .env)
+    Respects EXECUTE + FTMO guard by routing through controller.order_market().
+    """
+    try:
+        sym  = (os.getenv("AI_FORCE_ONCE","") or "").strip()
+        side = (os.getenv("AI_FORCE_SIDE","BUY") or "BUY").strip().upper()
+        vol  = float(os.getenv("AI_FORCE_VOL","0.01") or "0.01")
+        if not sym:
+            return
+        if getattr(ctrl, "_ai_force_done", False):
+            return
+        ctrl._ai_force_done = True
+        try:
+            print(f"[ai/force] placing one-shot {side} {sym} vol={vol}")
+            ctrl.order_market(sym, side, vol, reason="AI/FORCE_ONCE")
+            print("[ai/force] order requested")
+        except Exception as e:
+            print("[ai/force] failed:", e)
+    except Exception as e:
+        print("[ai/force] error:", e)
+# -*- coding: utf-8 -*-
+"""
+Minimal AI loop for FTMO Trader 2
+- Pulls MT5 bars per symbol (TF from .env keys like AI_TF_XAUUSD, else AI_TF, default M1).
+- Computes EMA(EMA_FAST/EMA_SLOW) + RSI(RSI_PERIOD).
+- Emits confidence in [0,1]; places orders only when controller is RUNNING, FTMO not violated, EXECUTE=1, and MIN_CONF met.
+- Uses controller._compute_volume() for sizing (so ATR_RISK / FIXED_LOT just work).
+- Cooldown per symbol to avoid spam.
+- Logs to CSV (logs\\ai_signals.csv) and SQLite (logs\\events.db, table ai_signals).
+- DRY_RUN_AI=1 simulates orders (logs only).
+"""
+
+import os, time, csv, datetime, threading
+try:
+    import sqlite3
+    import MetaTrader5 as mt5
+except Exception:
+    mt5 = None
+
+TF_MAP = {
+    "M1":  mt5.TIMEFRAME_M1 if mt5 else 1,
+    "M5":  mt5.TIMEFRAME_M5 if mt5 else 5,
+    "M15": mt5.TIMEFRAME_M15 if mt5 else 15,
+    "M30": mt5.TIMEFRAME_M30 if mt5 else 30,
+    "H1":  mt5.TIMEFRAME_H1 if mt5 else 60,
+    "H4":  mt5.TIMEFRAME_H4 if mt5 else 240,
+}
+
+def _ema(vals, period):
+    if period < 1 or len(vals) < period: return None
+    k = 2.0/(period+1.0)
+    e = vals[0]
+    for v in vals[1:]:
+        e = v*k + e*(1-k)
+    return e
+
+def _rsi(closes, period=14):
+    if len(closes) <= period: return None
+    gains = losses = 0.0
+    for i in range(1, period+1):
+        ch = closes[-i] - closes[-i-1]
+        if ch >= 0: gains += ch
+        else: losses += -ch
+    if gains == 0 and losses == 0: return 50.0
+    rs = (gains/period) / ((losses/period) if losses>0 else 1e-9)
+    return 100 - 100/(1+rs)
+
+def _get_env(d, key, default=None, cast=str):
+    try:
+        if key in d: return cast(d[key])
+    except Exception: pass
+    try:
+        v = os.environ.get(key, None)
+        return cast(v) if v is not None else default
+    except Exception:
+        return default
+
+def _bars(symbol, tf_name, n=300):
+    if not mt5: return []
+    tf = TF_MAP.get(str(tf_name).upper(), TF_MAP["M1"])
+    try:
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, n)
+        if not rates: return []
+        return [float(r.close) for r in rates]
+    except Exception:
+        return []
+
+def _signal_for_symbol(ctrl, sym, env):
+    # Per-symbol knobs from .env (fall back to global)
+    tf     = _get_env(env, f"AI_TF_{sym}", _get_env(env, "AI_TF", "M1"), str)
+    bars_n = _get_env(env, "AI_BARS", 300, int)
+    f      = _get_env(env, "EMA_FAST", 9, int)
+    s      = _get_env(env, "EMA_SLOW", 21, int)
+    rper   = _get_env(env, "RSI_PERIOD", 14, int)
+
+    closes = _bars(sym, tf, bars_n)
+    if len(closes) < max(f, s, rper) + 2:
+        return None  # not enough data
+
+    ema_f = _ema(closes[-(max(f, s)+50):], f)
+    ema_s = _ema(closes[-(max(f, s)+50):], s)
+    rsi   = _rsi(closes, rper)
+
+    if ema_f is None or ema_s is None or rsi is None:
+        return None
+
+    # Confidence: blend of EMA separation and RSI filter proximity
+    sep = (ema_f - ema_s) / max(1e-9, abs(ema_s))
+    sep_score = max(0.0, min(1.0, abs(sep)*5.0))  # scale
+    if ema_f > ema_s and 50 <= rsi <= 70:
+        side = "BUY"
+        rsi_score = max(0.0, min(1.0, (rsi-50)/20.0))
+        conf = 0.6*sep_score + 0.4*rsi_score
+    elif ema_f < ema_s and 30 <= rsi <= 50:
+        side = "SELL"
+        rsi_score = max(0.0, min(1.0, (50-rsi)/20.0))
+        conf = 0.6*sep_score + 0.4*rsi_score
+    else:
+        return {"side": "FLAT", "conf": 0.0, "tf": tf, "ema_fast": ema_f, "ema_slow": ema_s, "rsi": rsi}
+
+    return {"side": side, "conf": float(conf), "tf": tf, "ema_fast": ema_f, "ema_slow": ema_s, "rsi": rsi}
+
+def _sqlite_open():
+    try:
+        root = os.path.dirname(os.path.abspath(__file__))
+        dbp  = os.path.join(os.path.dirname(root), "logs", "events.db")
+        os.makedirs(os.path.dirname(dbp), exist_ok=True)
+        conn = sqlite3.connect(dbp, timeout=3.0, isolation_level=None)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_signals(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_iso TEXT,
+            symbol TEXT,
+            tf TEXT,
+            side TEXT,
+            confidence REAL,
+            ema_fast REAL,
+            ema_slow REAL,
+            rsi REAL,
+            placed INTEGER DEFAULT 0,
+            vol REAL DEFAULT 0.0,
+            reason TEXT
+        );
+        """)
+        return conn
+    except Exception:
+        return None
+
+def _csv_log(row):
+    try:
+        root = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(os.path.dirname(root), "logs", "ai_signals.csv")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        exists = os.path.exists(path)
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if not exists:
+                w.writerow(["ts_iso","symbol","tf","side","confidence","ema_fast","ema_slow","rsi","placed","vol","reason"])
+            w.writerow(row)
+    except Exception:
+        pass
+
+def start_ai_loop(ctrl):
+    """Start AI loop thread once. Reads per-symbol TF and thresholds from .env. No UI needed."""
+    if getattr(ctrl, "_ai_loop_started", False):
+        return True
+    setattr(ctrl, "_ai_loop_started", True)
+
+    env = {}
+    try:
+        # Prefer controller.ENV if present
+        if hasattr(ctrl, "ENV") and isinstance(ctrl.ENV, dict):
+            env.update(ctrl.ENV)
+    except Exception:
+        pass
+    # Also layer OS env
+    for k,v in os.environ.items():
+        env.setdefault(k, v)
+
+    # Cooldowns & state
+    min_secs = float(env.get("AI_MIN_SECS", "15"))   # seconds between decisions per symbol
+    trade_gap = float(env.get("AI_TRADE_GAP_SECS", "60"))  # min secs between orders per symbol
+    default_min_conf = float(env.get("MIN_CONF", "0.10"))
+    dry_run = str(env.get("DRY_RUN_AI","0")).lower() in ("1","true","yes","on")
+
+    last_decide = {}
+    last_trade  = {}
+
+    sqlite_conn = _sqlite_open()
+
+    def can_trade():
+        # RUNNING?
+        try:
+            st = ctrl.get_status() if hasattr(ctrl, "get_status") else {}
+            if not bool(st.get("running", False)): return False
+        except Exception:
+            pass
+        # FTMO violated?
+        try:
+            if hasattr(ctrl, "ftmo") and getattr(ctrl.ftmo, "violated", False):
+                return False
+        except Exception:
+            pass
+        # EXECUTE gate?
+        try:
+            if not bool(getattr(ctrl, "EXECUTE", True)):
+                return False
+        except Exception:
+            pass
+        return True
+
+    def get_symbols():
+        # Prefer rows from status for broker symbols
+        try:
+            st = ctrl.get_status()
+            rows = st.get("rows") or st.get("symbols") or []
+            syms = [r.get("broker") for r in rows if r.get("broker")]
+            if syms: return syms
+        except Exception:
+            pass
+        # Fallback: common set
+        return ["XAUUSD","US30","US100","SPX500","WTICOUSD","BTCUSD"]
+
+    def _loop():
+        while True:
+            try:
+                for sym in get_symbols():
+                    now = time.time()
+                    if now - last_decide.get(sym, 0) < min_secs:
+                        continue
+                    last_decide[sym] = now
+
+                    sig = _signal_for_symbol(ctrl, sym, env)
+                    if not sig: continue
+
+                    # Log signal
+                    ts = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                    placed = 0; vol_used = 0.0; reason = ""
+                    _csv_log([ts, sym, sig.get("tf",""), sig["side"], sig["conf"],
+                              sig.get("ema_fast",""), sig.get("ema_slow",""), sig.get("rsi",""),
+                              placed, vol_used, reason])
+                    if sqlite_conn:
+                        try:
+                            sqlite_conn.execute(
+                                "INSERT INTO ai_signals (ts_iso,symbol,tf,side,confidence,ema_fast,ema_slow,rsi,placed,vol,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                (ts, sym, sig.get("tf",""), sig["side"], float(sig["conf"]),
+                                 float(sig.get("ema_fast") or 0.0), float(sig.get("ema_slow") or 0.0), float(sig.get("rsi") or 0.0),
+                                 0, 0.0, "")
+                            )
+                        except Exception:
+                            pass
+
+                    # Only place orders if allowed, side not FLAT, conf >= MIN_CONF, and cooldown observed
+                    if sig["side"] == "FLAT": continue
+                    try:
+                        min_conf = float(getattr(ctrl, "MIN_CONF", default_min_conf))
+                    except Exception:
+                        min_conf = default_min_conf
+                    if float(sig["conf"]) < min_conf: continue
+                    if not can_trade(): continue
+                    if now - last_trade.get(sym, 0) < trade_gap: continue
+
+                    # Get last price for sizing
+                    price = None
+                    try:
+                        tick = mt5.symbol_info_tick(sym)
+                        if tick:
+                            price = float(tick.ask if sig["side"]=="BUY" else tick.bid)
+                    except Exception:
+                        pass
+                    if price is None: continue
+
+                    # Requested volume parameter: for FIXED_LOT, it's lots; for ATR_RISK it's risk% (from ctrl)
+                    req = 0.10
+                    try:
+                        # Prefer the GUI/ENV entry as a hint; otherwise use controller.LOT_SIZE or RISK_PCT
+                        if hasattr(ctrl, "SIZING_MODE") and str(getattr(ctrl, "SIZING_MODE")).upper() == "ATR_RISK":
+                            req = float(getattr(ctrl, "RISK_PCT", 0.50))
+                        else:
+                            req = float(getattr(ctrl, "LOT_SIZE", 0.10))
+                    except Exception:
+                        pass
+
+                    lots = 0.0
+                    if hasattr(ctrl, "_compute_volume"):
+                        try:
+                            lots, _ = ctrl._compute_volume(req, sig["side"], price, sym)
+                        except Exception:
+                            lots = 0.0
+                    if lots <= 0: continue
+
+                    # Place (or dry-run)
+                    if dry_run:
+                        reason = "AI/DRYRUN"
+                        placed = 0
+                        vol_used = float(lots)
+                        _csv_log([ts, sym, sig.get("tf",""), sig["side"], sig["conf"],
+                                  sig.get("ema_fast",""), sig.get("ema_slow",""), sig.get("rsi",""),
+                                  placed, vol_used, reason])
+                        if sqlite_conn:
+                            try:
+                                sqlite_conn.execute(
+                                    "INSERT INTO ai_signals (ts_iso,symbol,tf,side,confidence,ema_fast,ema_slow,rsi,placed,vol,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                    (ts, sym, sig.get("tf",""), sig["side"], float(sig["conf"]),
+                                     float(sig.get("ema_fast") or 0.0), float(sig.get("ema_slow") or 0.0), float(sig.get("rsi") or 0.0),
+                                     0, float(lots), reason)
+                                )
+                            except Exception:
+                                pass
+                        print(f"[ai] {sym} {sig['side']} conf={sig['conf']:.2f} lots={lots:.2f} [DRY-RUN]")
+                        last_trade[sym] = now
+                        continue
+
+                    ok, res = (False, "no controller.order_market")
+                    if hasattr(ctrl, "order_market"):
+                        ok, res = ctrl.order_market(sym, sig["side"], float(lots), reason="ai")
+                    print(f"[ai] {sym} {sig['side']} conf={sig['conf']:.2f} lots={lots:.2f} ok={ok} -> {res}")
+
+                    placed = 1 if ok else 0
+                    vol_used = float(lots)
+                    _csv_log([ts, sym, sig.get("tf",""), sig["side"], sig["conf"],
+                              sig.get("ema_fast",""), sig.get("ema_slow",""), sig.get("rsi",""),
+                              placed, vol_used, "AI"])
+                    if sqlite_conn:
+                        try:
+                            sqlite_conn.execute(
+                                "INSERT INTO ai_signals (ts_iso,symbol,tf,side,confidence,ema_fast,ema_slow,rsi,placed,vol,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                (ts, sym, sig.get("tf",""), sig["side"], float(sig["conf"]),
+                                 float(sig.get("ema_fast") or 0.0), float(sig.get("ema_slow") or 0.0), float(sig.get("rsi") or 0.0),
+                                 int(placed), float(vol_used), "AI")
+                            )
+                        except Exception:
+                            pass
+                    last_trade[sym] = now
+
+                time.sleep(1.0)
+            except Exception as e:
+                try: print(f"[ai] loop error: {e}")
+                except Exception: pass
+                time.sleep(1.0)
+
+    threading.Thread(target=_loop, name="ai_loop", daemon=True).start()
+    print("[ai] loop started")
+    return True

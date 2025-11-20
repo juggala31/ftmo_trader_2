@@ -1,0 +1,8 @@
+{
+  "XAUUSD":   { "commission_per_side": 3.50, "spread_points": 1.0, "slippage_points": 0.5, "point_value": 1.0 },
+  "US30USD":  { "commission_per_side": 3.50, "spread_points": 1.0, "slippage_points": 0.5, "point_value": 1.0 },
+  "NAS100USD":{ "commission_per_side": 3.50, "spread_points": 1.0, "slippage_points": 0.5, "point_value": 1.0 },
+  "SPX500USD":{ "commission_per_side": 3.50, "spread_points": 1.0, "slippage_points": 0.5, "point_value": 1.0 },
+  "WTICOUSD": { "commission_per_side": 3.50, "spread_points": 1.0, "slippage_points": 0.5, "point_value": 1.0 },
+  "BTCUSD":   { "commission_per_side": 3.50, "spread_points": 1.0, "slippage_points": 0.5, "point_value": 1.0 }
+}

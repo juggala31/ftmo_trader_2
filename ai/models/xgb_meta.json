@@ -1,0 +1,25 @@
+{
+  "feature_cols": [
+    "ret_1",
+    "logret_1",
+    "atr14",
+    "rvol_20",
+    "rsi14",
+    "ma20",
+    "ma50",
+    "hour",
+    "dow"
+  ],
+  "target_col": "up_3",
+  "models": [
+    {
+      "symbol": "XAUZ25.sim",
+      "tf": "H1",
+      "rows": 1677,
+      "train_rows": 1341,
+      "valid_rows": 336,
+      "pos_frac": 0.554561717352415,
+      "valid_acc": 0.5297619047619048
+    }
+  ]
+}

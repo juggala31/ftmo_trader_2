@@ -1,0 +1,7 @@
+name: Moderate
+overrides:
+  time_windows:
+    allowed:
+      XAUUSD:  ["06:00-20:00"]
+  daily_limits:
+    daily_loss_cap: -1000

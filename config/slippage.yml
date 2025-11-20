@@ -1,0 +1,17 @@
+enabled: true
+reason_prefix: "SLIP"
+# thresholds in points; fallbacks used if symbol not listed
+max_slippage_points:
+  XAUUSD: 30
+  US30USD: 40
+  NAS100USD: 50
+  SPX500USD: 20
+  WTICOUSD: 30
+  BTCUSD: 200
+default_points: 30
+
+# retries: if slippage > threshold
+retries:
+  enabled: true
+  attempts: 2
+  shrink_factor: 0.5   # reduce volume by this factor each retry

@@ -1,0 +1,25 @@
+symbols:
+  - name: XAUUSD
+    min_volume: 0.01
+    max_volume: 50.0
+    volume_step: 0.01
+  - name: US30USD
+    min_volume: 0.10
+    max_volume: 50.0
+    volume_step: 0.10
+  - name: NAS100USD
+    min_volume: 0.10
+    max_volume: 50.0
+    volume_step: 0.10
+  - name: EURUSD
+    min_volume: 0.01
+    max_volume: 50.0
+    volume_step: 0.01
+  - name: GBPUSD
+    min_volume: 0.01
+    max_volume: 50.0
+    volume_step: 0.01
+  - name: SPX500USD
+    min_volume: 0.10
+    max_volume: 50.0
+    volume_step: 0.10
